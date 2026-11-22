@@ -293,7 +293,7 @@ test('base drift after BOTH rounds: the final phase is redone under the remainin
   assert.equal(stateOf(gh).scope.merge_base_sha, sha('7'));
 
   // no attempts left
-  gh.comments[0].body = renderComment({ ...exhausted, attempts_used: 10 });
+  gh.comments[0].body = renderComment({ ...exhausted, attempts_used: MAX_ATTEMPTS });
   gh.mergeBase = sha('6');
   const none = scriptedProvider(ok);
   const r = await review({ gh, provider: none, ctx: makeContext(names(2), { mergeBase: sha('6') }) });
