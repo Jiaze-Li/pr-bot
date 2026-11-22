@@ -29,6 +29,12 @@ export function makeScope({ mergeBase, files, skipped = 0 }) {
 }
 const sameScope = (a, b) => a.merge_base_sha === b.merge_base_sha && a.files_sha256 === b.files_sha256;
 
+// Compatibility repair: an old capacity preflight (NO model call) incorrectly
+// wrote stalled_attempts=STALL_LIMIT. Recognize only that historical STOPPED reason,
+// not actual model stalls. Preserve the spent calls, completed rounds and findings.
+const wasCapacityPreflightStop = (state) => state?.status === 'STOPPED'
+  && /^\d+ file\(s\) still to review need at least \d+ model executions \(a batch is at most \d+ files or about \d+ KB of diff\), but only \d+ of \d+ remain for this pull request\. Split the pull request or review it manually\.$/.test(state.reason);
+
 // ---------------------------------------------------------------- the "should a model run?" decision
 
 // pr: { state, draft, head_sha }; read: readState() result; requestedHead: HEAD the queued event captured.
@@ -47,6 +53,9 @@ export function planRun({ pr, requestedHead, read, now = Date.now(), mergeBase }
     const startedAt = Date.parse(state.claimed_at);
     if (!Number.isFinite(startedAt) || now - startedAt < IN_PROGRESS_TIMEOUT_MS) return { action: 'wait_in_progress', reason: 'a review attempt is still running', state };
     state = interrupted(state, now); // the attempt stays spent; nothing is credited
+  }
+  if (state.head_sha === pr.head_sha && state.stalled_attempts >= STALL_LIMIT && wasCapacityPreflightStop(state)) {
+    state = { ...state, stalled_attempts: 0 }; // repair the false stall; rerun preflight against the current budget
   }
   // Same HEAD, other merge-base: the diff is a different one. The round that concluded on the old diff is not a verdict on
   // this one and is not a third phase either: it is reopened (redone as the CURRENT phase, under the remaining attempts).
