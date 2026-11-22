@@ -363,7 +363,7 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
   const turnReads = maxReadCalls(provider.limits.maxTurns);
   const readsOf = (file) => (readNeed(file, byPath.get(file)) ? readCallsFor(byPath.get(file).bytes) : 0);
   const tooBig = scopeFiles.filter((file) => readsOf(file) > turnReads);
-// Scope/capacity preflights perform NO model execution; they must not increment the no-progress stall counter.
+  // Scope/capacity preflights perform NO model execution; they must not increment the no-progress stall counter.
   if (scope.total_files > MAX_SCOPE_FILES) {
     const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, now: now(),
       reason: `${scope.total_files} reviewable files exceed the ${MAX_SCOPE_FILES}-file limit the review state can track; split the pull request.` });
