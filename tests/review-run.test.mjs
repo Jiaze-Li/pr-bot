@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_ATTEMPTS, MAX_ROUNDS, isBlocking } from '../scripts/review-contract.mjs';
-import { PR, REPO, assignedFrom, fakeGithub, makeContext, model, review, scriptedProvider, sha } from './helpers/harness.mjs';
+import { BOT_LOGIN, MAX_ATTEMPTS, MAX_ROUNDS, isBlocking, renderComment } from '../scripts/review-contract.mjs';
+import { makeScope } from '../scripts/review-engine.mjs';
+import { MERGE_BASE, PR, REPO, assignedFrom, fakeGithub, makeContext, model, review, scriptedProvider, sha } from './helpers/harness.mjs';
 
 const files = (n) => Array.from({ length: n }, (_, i) => `src/f${String(i).padStart(2, '0')}.js`);
 const P2 = { severity: 'P2', title: 'Retry drops chunk', path: 'src/f00.js', failure_path: 'Second attempt skips the final chunk so the file is truncated.' };
@@ -290,6 +291,46 @@ test('no progress on one HEAD stops by itself and says what is unreviewed; same-
   const again = scriptedProvider(all);
   const r2 = await review({ gh, provider: again, ctx });
   if (stateOf(gh).stalled_attempts >= 4) assert.equal(again.calls.length, 0, r2.action);
+});
+
+test('legacy #219 capacity STOPPED repairs false stall and completes round 2 with existing calls preserved', async () => {
+  const changed = files(27);
+  const gh = fakeGithub({ head: sha('b') });
+  const oldHead = sha('a');
+  const original = {
+    schema_version: 2, repo: REPO, pr_number: PR, head_sha: gh.head, status: 'STOPPED',
+    // Exact reason published on #219 by the old ten-call preflight, which did not invoke a model.
+    reason: '27 file(s) still to review need at least 5 model executions (a batch is at most 10 files or about 70 KB of diff), but only 4 of 10 remain for this pull request. Split the pull request or review it manually.',
+    completed_rounds: 1, completed_head_sha: oldHead, attempts_used: 6, stalled_attempts: 4,
+    scope: makeScope({ mergeBase: MERGE_BASE, files: changed }),
+    reviewed_files: [],
+    findings: [{ id: 'F001', severity: 'P2', title: 'Trash count stays stale', path: changed[0],
+      failure_path: 'Trashed sample count changes without changing sidebar cache key', verification: 'OPEN', checked_head_sha: oldHead }],
+    updated_at: '2026-11-21T16:45:55.832Z',
+  };
+  const saved = (gh2, record) => gh2.comments.push({ id: '99', source: 'issue', type: 'Bot', login: BOT_LOGIN, body: renderComment(record) });
+  saved(gh, original);
+
+  // Two ~60KB diffs plus 25 normal files need five separate batches under the 70KB/10-files limits.
+  const provider = scriptedProvider((call) => model.ok({ assigned: call.assigned,
+    prior: [{ id: 'F001', verification: 'FIXED', evidence: 'cache key now includes trashed sample count' }] }));
+  const result = await review({ gh, provider, ctx: makeContext(changed, { bigDiff: changed.slice(0, 2) }) });
+  assert.equal(result.status, 'READY');
+  assert.equal(provider.calls.length, 5, 'a formerly blocked review can use the additional capacity');
+  const done = stateOf(gh);
+  assert.equal(done.attempts_used, 11, 'six historic calls stay spent; five new calls are counted');
+  assert.equal(done.completed_rounds, 2, 'no extra business review round');
+  assert.equal(done.findings[0].verification, 'FIXED');
+  assert.equal(done.stalled_attempts, 0);
+
+  // Never mistake real repeated no-progress attempts for an old capacity preflight.
+  const held = fakeGithub({ head: gh.head });
+  saved(held, { ...original, reason: 'Repeated attempts on this HEAD made no progress' });
+  const noMore = scriptedProvider((call) => model.ok({ assigned: call.assigned }));
+  const unchanged = await review({ gh: held, provider: noMore, ctx: makeContext(changed) });
+  assert.equal(unchanged.action, 'hold');
+  assert.equal(noMore.calls.length, 0);
+  assert.equal(stateOf(held).stalled_attempts, 4);
 });
 
 test('coverage is checked by the program: outside paths, complete=false with every path listed, and unread truncated diffs earn no credit', async () => {
