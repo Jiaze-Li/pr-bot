@@ -363,8 +363,9 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
   const turnReads = maxReadCalls(provider.limits.maxTurns);
   const readsOf = (file) => (readNeed(file, byPath.get(file)) ? readCallsFor(byPath.get(file).bytes) : 0);
   const tooBig = scopeFiles.filter((file) => readsOf(file) > turnReads);
+// Scope/capacity preflights perform NO model execution; they must not increment the no-progress stall counter.
   if (scope.total_files > MAX_SCOPE_FILES) {
-    const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, stalled: true, now: now(),
+    const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, now: now(),
       reason: `${scope.total_files} reviewable files exceed the ${MAX_SCOPE_FILES}-file limit the review state can track; split the pull request.` });
     await store.write(stopped);
     await project(github, stopped, log);
@@ -372,7 +373,7 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
   }
 
   if (tooBig.length) { // a file no single attempt can read through can never be credited: say so now, do not burn the budget
-    const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, stalled: true, now: now(),
+    const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, now: now(),
       reason: `${tooBig.length} file(s) are too large to read through within one attempt's ${provider.limits.maxTurns}-turn budget (${tooBig.slice(0, 3).join(', ')}); split or shrink them.` });
     await store.write(stopped);
     await project(github, stopped, log);
@@ -387,7 +388,7 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
     const left = MAX_ATTEMPTS - (plan.state?.attempts_used ?? 0);
     const need = countBatches({ files: todo, bytesOf: (file) => byPath.get(file).bytes, readsOf, maxReads: turnReads });
     if (need > left) {
-      const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, stalled: true, now: now(),
+      const stopped = stoppedState({ prev: plan.state, repo: target, prNumber, head, scope, now: now(),
         reason: `${todo.length} file(s) still to review need at least ${need} model executions (a batch is at most ${BATCH_LIMITS.maxFiles} files or about ${Math.round(BATCH_LIMITS.targetBytes / 1000)} KB of diff), but only ${left} of ${MAX_ATTEMPTS} remain for this pull request. Split the pull request or review it manually.` });
       await store.write(stopped);
       await project(github, stopped, log);
