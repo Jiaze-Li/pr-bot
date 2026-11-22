@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  BOT_LOGIN, MARKER, evaluateComment, parseComment, readState, renderComment, validateState,
+  BOT_LOGIN, MARKER, MAX_ATTEMPTS, evaluateComment, parseComment, readState, renderComment, validateState,
 } from '../scripts/review-contract.mjs';
 import { FIXTURES_PATH, buildFixtures, checkFixtures } from '../scripts/review-fixtures.mjs';
 import { applyBatch, claimAttempt, concludeRound, makeScope, parseBatchOutput } from '../scripts/review-engine.mjs';
@@ -48,7 +48,8 @@ test('contradictory states are invalid: READY with a blocker, READY off the conc
   assert.ok(!validateState({ ...done, completed_head_sha: sha('b') }).ok);
   assert.ok(!validateState({ ...done, status: 'CHANGES_REQUESTED' }).ok);
   assert.ok(!validateState({ ...done, completed_rounds: 3 }).ok);
-  assert.ok(!validateState({ ...done, attempts_used: 11 }).ok);
+  assert.ok(validateState({ ...done, attempts_used: MAX_ATTEMPTS }).ok);
+  assert.ok(!validateState({ ...done, attempts_used: MAX_ATTEMPTS + 1 }).ok);
   assert.ok(!validateState({ ...done, completed_rounds: 0 }).ok);
 });
 
