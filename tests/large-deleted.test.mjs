@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BOT_LOGIN, readState, renderComment } from '../scripts/review-contract.mjs';
+import { BOT_LOGIN, MAX_ATTEMPTS, readState, renderComment } from '../scripts/review-contract.mjs';
 import { createProvider, loadContext, readNeed, runReview } from '../scripts/review.mjs';
 import { BATCH_LIMITS, nextBatch, readCallsFor, maxReadCalls } from '../scripts/review-engine.mjs';
 import { splitDiffByFile } from '../scripts/review-shards.mjs';
@@ -307,7 +307,7 @@ test('base drift after BOTH rounds: the final phase is redone under the remainin
   assert.match(s.state.reason, /budget used up/);
 });
 
-test('whole-PR preflight: 26 files fit; 60 files fit; a PR that cannot finish within 10 executions stops before any model call', async () => {
+test('whole-PR preflight: 26 and 60 files fit; capacity over the lifetime budget stops before model calls', async () => {
   for (const n of [26, 60]) {
     const gh = fakeGithub();
     const p = scriptedProvider(ok);
@@ -315,7 +315,7 @@ test('whole-PR preflight: 26 files fit; 60 files fit; a PR that cannot finish wi
     assert.equal(r.status, 'READY', `${n} files`);
     assert.equal(p.calls.length, Math.ceil(n / 10));
   }
-  for (const n of [101, 156]) {
+  for (const n of [MAX_ATTEMPTS * 10 + 1, 156]) {
     const gh = fakeGithub();
     const p = scriptedProvider(ok);
     const r = await review({ gh, provider: p, ctx: makeContext(names(n).concat(Array.from({ length: Math.max(0, n - 100) }, (_, i) => `docs/x${i}.md`)).slice(0, n)) });
@@ -323,7 +323,8 @@ test('whole-PR preflight: 26 files fit; 60 files fit; a PR that cannot finish wi
     assert.equal(p.calls.length, 0, 'no attempt is spent');
     assert.equal(stateOf(gh).attempts_used, 0);
     assert.equal(stateOf(gh).completed_rounds, 0);
-    assert.match(stateOf(gh).reason, new RegExp(`need at least ${Math.ceil(n / 10)} model executions.*only 10 of 10 remain`));
+    assert.match(stateOf(gh).reason, new RegExp(`need at least ${Math.ceil(n / 10)} model executions.*only ${MAX_ATTEMPTS} of ${MAX_ATTEMPTS} remain`));
+    assert.equal(stateOf(gh).stalled_attempts, 0, 'a preflight with zero model calls is NOT a stalled model attempt');
   }
 });
 
