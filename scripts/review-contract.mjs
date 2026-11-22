@@ -9,7 +9,7 @@ export const SCHEMA_VERSION = 2;
 export const STATUS_CONTEXT = 'claude-review-bot/review';
 export const BOT_LOGIN = 'jiaze-claude-review-bot[bot]';
 
-export const MAX_ROUNDS = 2; // complete review conclusions per PR
+export const MAX_ROUNDS = 3; // complete review conclusions per PR; model-call cap remains 14
 export const MAX_ATTEMPTS = 14; // model executions per PR, ever
 export const STALL_LIMIT = 4; // consecutive attempts on one HEAD that credited no new file
 export const MAX_FINDINGS = 40;
@@ -79,7 +79,7 @@ export function validateState(state, expected = {}) {
     const blocking = state.findings.some(isBlocking);
     const concluded = state.completed_head_sha === state.head_sha;
     if (state.status === 'READY' && (!concluded || blocking)) errors.push('READY needs a completed round on this HEAD and no unresolved P0-P2');
-    if (state.status === 'CHANGES_REQUESTED' && (!concluded || !blocking || state.completed_rounds !== 1)) errors.push('CHANGES_REQUESTED needs a completed first round on this HEAD with a blocking finding');
+    if (state.status === 'CHANGES_REQUESTED' && (!concluded || !blocking || (state.completed_rounds < 1 || state.completed_rounds >= MAX_ROUNDS))) errors.push('CHANGES_REQUESTED needs a completed non-final round on this HEAD with a blocking finding');
     if (state.status === 'IN_PROGRESS' && (state.attempts_used < 1 || typeof state.claimed_at !== 'string')) errors.push('IN_PROGRESS must have a recorded attempt');
     if (concluded && state.reviewed_files.length) errors.push('a completed round carries no partial progress');
   }

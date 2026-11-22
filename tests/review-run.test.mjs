@@ -161,35 +161,41 @@ test('a failed PATCH followed by another writer is never retried over their new 
   assert.match(gh.comments[0].body, /"stalled_attempts": 3/);
 });
 
-test('round 1 -> batch fix -> round 2 verifies every earlier blocker; omission is not a fix and no third round starts', async () => {
+test('round 2 unresolved blocker requests changes; round 3 is final and a fourth is forbidden', async () => {
   const gh = fakeGithub({ head: sha('a') });
   const ctx = makeContext(files(3));
   await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [P2] })), ctx });
   assert.equal(stateOf(gh).status, 'CHANGES_REQUESTED');
   assert.equal(stateOf(gh).completed_rounds, 1);
 
-  gh.head = sha('b'); // the one batched fix
-  const omits = scriptedProvider(all);
-  const r2 = await review({ gh, provider: omits, ctx });
+  gh.head = sha('b');
+  const r2 = await review({ gh, provider: scriptedProvider(all), ctx });
   let s = stateOf(gh);
-  assert.equal(r2.status, 'STOPPED');
-  assert.equal(s.completed_rounds, MAX_ROUNDS);
-  assert.equal(s.findings.find((f) => f.id === 'F001').verification, 'UNCERTAIN', 'omitted != FIXED');
+  assert.equal(r2.status, 'CHANGES_REQUESTED');
+  assert.equal(s.completed_rounds, 2);
+  assert.equal(s.findings.find((f) => f.id === 'F001').verification, 'UNCERTAIN', 'omission is not a fix');
   assert.ok(s.findings.some(isBlocking));
 
-  gh.head = sha('c'); // a later push can only be reported as unreviewed
+  gh.head = sha('c');
+  const r3 = await review({ gh, provider: scriptedProvider(all), ctx });
+  s = stateOf(gh);
+  assert.equal(r3.status, 'STOPPED');
+  assert.equal(s.completed_rounds, MAX_ROUNDS);
+  assert.ok(s.findings.some(isBlocking));
+
+  gh.head = sha('d'); // another push must not start a fourth complete round
   const none = scriptedProvider(all);
-  const r3 = await review({ gh, provider: none, ctx });
-  assert.equal(r3.action, 'budget_stop');
+  const r4 = await review({ gh, provider: none, ctx });
+  assert.equal(r4.action, 'budget_stop');
   assert.equal(none.calls.length, 0);
   s = stateOf(gh);
   assert.equal(s.status, 'STOPPED');
   assert.equal(s.completed_rounds, MAX_ROUNDS);
-  assert.equal(s.head_sha, sha('c'));
+  assert.equal(s.head_sha, sha('d'));
 });
 
 test('round 2 with FIXED + evidence reaches READY; FIXED without evidence does not', async () => {
-  for (const [evidence, expected] of [['loop now flushes the last chunk (src/f00.js:12)', 'READY'], ['', 'STOPPED']]) {
+  for (const [evidence, expected] of [['loop now flushes the last chunk (src/f00.js:12)', 'READY'], ['', 'CHANGES_REQUESTED']]) {
     const gh = fakeGithub({ head: sha('a') });
     const ctx = makeContext(files(2));
     await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [P2] })), ctx });
@@ -207,7 +213,7 @@ test('a repeated report of an old FIXED or P3 issue is not hidden by the old ver
   gh.head = sha('b'); // round 2: the same title now comes back as P2
   await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [P2] })), ctx });
   const s = stateOf(gh);
-  assert.equal(s.status, 'STOPPED');
+  assert.equal(s.status, 'CHANGES_REQUESTED');
   assert.equal(s.findings.length, 1, 'same issue keeps its id');
   assert.equal(s.findings[0].severity, 'P2');
 });
@@ -291,6 +297,47 @@ test('no progress on one HEAD stops by itself and says what is unreviewed; same-
   const again = scriptedProvider(all);
   const r2 = await review({ gh, provider: again, ctx });
   if (stateOf(gh).stalled_attempts >= 4) assert.equal(again.calls.length, 0, r2.action);
+});
+
+test('historical #224: old 2/2 STOPPED with 9/14 calls resumes a true third round on the next HEAD', async () => {
+  const changed = files(27);
+  const gh = fakeGithub({ head: sha('b') });
+  const priorHead = sha('a');
+  const preserved = {
+    schema_version: 2, repo: REPO, pr_number: PR, head_sha: gh.head,
+    status: 'STOPPED', reason: 'Both review rounds are used (2/2); new HEAD was not reviewed.',
+    completed_rounds: 2, completed_head_sha: priorHead, attempts_used: 9, stalled_attempts: 0,
+    scope: makeScope({ mergeBase: MERGE_BASE, files: changed }), reviewed_files: [],
+    findings: [
+      { id: 'F001', severity: 'P3', title: 'Read-only UI does not persist', path: changed[1],
+        failure_path: 'Suggestion only', verification: 'OPEN', checked_head_sha: priorHead },
+      { id: 'F002', severity: 'P2', title: 'Registry write bypasses external guard', path: changed[0],
+        failure_path: 'Read-only instance writes the external XLSX', verification: 'FIXED', checked_head_sha: priorHead },
+    ],
+    updated_at: '2026-11-22T11:28:27.881Z',
+  };
+  gh.comments.push({ id: '99', source: 'issue', type: 'Bot', login: BOT_LOGIN, body: renderComment(preserved) });
+  const provider = scriptedProvider((call) => model.ok({ assigned: call.assigned, prior: [
+    { id: 'F002', verification: 'FIXED', evidence: 'Registry guard now rejects write even for an external workbook' },
+  ] }));
+  const r = await review({ gh, provider, ctx: makeContext(changed) });
+  const done = stateOf(gh);
+  assert.equal(r.status, 'READY');
+  assert.equal(done.completed_rounds, 3);
+  assert.equal(provider.calls.length, 3);
+  assert.equal(done.attempts_used, 12, 'all nine historical calls remain spent');
+  assert.equal(done.head_sha, gh.head);
+  assert.equal(done.completed_head_sha, gh.head);
+  assert.equal(done.findings.find(f => f.id === 'F002').verification, 'FIXED');
+  assert.equal(done.findings.find(f => f.id === 'F002').checked_head_sha, gh.head, 'fix was reverified');
+  assert.equal(done.findings.find(f => f.id === 'F001').severity, 'P3');
+
+  gh.head = sha('c');
+  const blocked = scriptedProvider(all);
+  const after = await review({ gh, provider: blocked, ctx: makeContext(changed) });
+  assert.equal(after.action, 'budget_stop');
+  assert.equal(blocked.calls.length, 0, 'a fourth round is forbidden even with two calls left');
+  assert.equal(stateOf(gh).attempts_used, 12);
 });
 
 test('legacy #219 capacity STOPPED repairs false stall and completes round 2 with existing calls preserved', async () => {
