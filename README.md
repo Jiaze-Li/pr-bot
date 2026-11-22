@@ -19,7 +19,7 @@ You get one bot comment (the only record) and the `claude-review-bot/review` com
 | READY | the current commit is completely reviewed and has no unresolved P0/P1/P2 |
 | STOPPED | automatic review cannot continue; the comment says why and what is unreviewed |
 
-Two complete rounds per PR, P3 never blocks, and a hard cap on model executions per PR. Details: [docs/review-contract.md](docs/review-contract.md).
+Up to three complete review rounds per PR, P3 never blocks, and the SAME hard cap of 14 model executions per PR (never reset by a new HEAD). The third round permits additional verification, not extra calls. Details: [docs/review-contract.md](docs/review-contract.md).
 
 ## Layout
 
