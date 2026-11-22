@@ -311,10 +311,10 @@ test('legacy #219 capacity STOPPED repairs false stall and completes round 2 wit
   const saved = (gh2, record) => gh2.comments.push({ id: '99', source: 'issue', type: 'Bot', login: BOT_LOGIN, body: renderComment(record) });
   saved(gh, original);
 
-  // Two ~60KB diffs plus 25 normal files need five separate batches under the 70KB/10-files limits.
+  // Three ~60KB diffs plus 24 normal files require five batches under the 70KB/10-files limits.
   const provider = scriptedProvider((call) => model.ok({ assigned: call.assigned,
     prior: [{ id: 'F001', verification: 'FIXED', evidence: 'cache key now includes trashed sample count' }] }));
-  const result = await review({ gh, provider, ctx: makeContext(changed, { bigDiff: changed.slice(0, 2) }) });
+  const result = await review({ gh, provider, ctx: makeContext(changed, { bigDiff: changed.slice(0, 3) }) });
   assert.equal(result.status, 'READY');
   assert.equal(provider.calls.length, 5, 'a formerly blocked review can use the additional capacity');
   const done = stateOf(gh);
