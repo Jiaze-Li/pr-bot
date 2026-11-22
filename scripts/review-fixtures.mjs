@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { BOT_LOGIN, MARKER, SCHEMA_VERSION, evaluateComment, isBlocking, renderComment } from './review-contract.mjs';
+import { BOT_LOGIN, MARKER, MAX_ATTEMPTS, SCHEMA_VERSION, evaluateComment, isBlocking, renderComment } from './review-contract.mjs';
 import { applyBatch, claimAttempt, concludeRound, makeScope, parseBatchOutput, planRun, stopRun, stoppedState } from './review-engine.mjs';
 
 const REPO = 'owner/repo';
@@ -87,7 +87,7 @@ export function buildFixtureCases() {
   add({ name: 'same HEAD, merge-base moved, partial redo is a valid IN_PROGRESS (not a phantom round)', state: redoing, head: h1, base: moved, expected: { trusted: true, decision: 'WAIT' } });
   const redone = attempt({ prev: redo.state, head: h1, scope: movedScope, output: modelOutput() });
   add({ name: 'same HEAD, merge-base moved, redo complete: READY for the current scope, still one round', state: redone, head: h1, base: moved, expected: { trusted: true, decision: 'READY' } });
-  const spent = { ...fixed, attempts_used: 10 };
+  const spent = { ...fixed, attempts_used: MAX_ATTEMPTS };
   const drift = planRun({ pr: { state: 'open', draft: false, head_sha: h2 }, requestedHead: h2, read: { kind: 'ok', state: spent }, now: NOW, mergeBase: moved });
   if (drift.action !== 'budget_stop' || !drift.rebase) throw new Error(`policy no longer stops an exhausted base drift: ${drift.action}`);
   const driftStop = stoppedState({ prev: drift.state, repo: REPO, prNumber: PR, head: h2, reason: drift.reason, now: NOW, scope: { ...drift.state.scope, merge_base_sha: drift.rebase } });
