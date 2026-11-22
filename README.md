@@ -15,7 +15,7 @@ You get one bot comment (the only record) and the `claude-review-bot/review` com
 | Status | Meaning |
 | --- | --- |
 | IN_PROGRESS | the current round is being reviewed (sequential batches, with resumption) |
-| CHANGES_REQUESTED | round 1 is complete and found P0/P1/P2: fix them together, push once |
+| CHANGES_REQUESTED | round 1 or 2 is complete and found unresolved P0/P1/P2: fix them together and push once for the next round (if budget remains) |
 | READY | the current commit is completely reviewed and has no unresolved P0/P1/P2 |
 | STOPPED | automatic review cannot continue; the comment says why and what is unreviewed |
 
