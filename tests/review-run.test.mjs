@@ -161,35 +161,41 @@ test('a failed PATCH followed by another writer is never retried over their new 
   assert.match(gh.comments[0].body, /"stalled_attempts": 3/);
 });
 
-test('round 1 -> batch fix -> round 2 verifies every earlier blocker; omission is not a fix and no third round starts', async () => {
+test('round 2 unresolved blocker requests changes; round 3 is final and a fourth is forbidden', async () => {
   const gh = fakeGithub({ head: sha('a') });
   const ctx = makeContext(files(3));
   await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [P2] })), ctx });
   assert.equal(stateOf(gh).status, 'CHANGES_REQUESTED');
   assert.equal(stateOf(gh).completed_rounds, 1);
 
-  gh.head = sha('b'); // the one batched fix
-  const omits = scriptedProvider(all);
-  const r2 = await review({ gh, provider: omits, ctx });
+  gh.head = sha('b');
+  const r2 = await review({ gh, provider: scriptedProvider(all), ctx });
   let s = stateOf(gh);
-  assert.equal(r2.status, 'STOPPED');
-  assert.equal(s.completed_rounds, MAX_ROUNDS);
-  assert.equal(s.findings.find((f) => f.id === 'F001').verification, 'UNCERTAIN', 'omitted != FIXED');
+  assert.equal(r2.status, 'CHANGES_REQUESTED');
+  assert.equal(s.completed_rounds, 2);
+  assert.equal(s.findings.find((f) => f.id === 'F001').verification, 'UNCERTAIN', 'omission is not a fix');
   assert.ok(s.findings.some(isBlocking));
 
-  gh.head = sha('c'); // a later push can only be reported as unreviewed
+  gh.head = sha('c');
+  const r3 = await review({ gh, provider: scriptedProvider(all), ctx });
+  s = stateOf(gh);
+  assert.equal(r3.status, 'STOPPED');
+  assert.equal(s.completed_rounds, MAX_ROUNDS);
+  assert.ok(s.findings.some(isBlocking));
+
+  gh.head = sha('d'); // another push must not start a fourth complete round
   const none = scriptedProvider(all);
-  const r3 = await review({ gh, provider: none, ctx });
-  assert.equal(r3.action, 'budget_stop');
+  const r4 = await review({ gh, provider: none, ctx });
+  assert.equal(r4.action, 'budget_stop');
   assert.equal(none.calls.length, 0);
   s = stateOf(gh);
   assert.equal(s.status, 'STOPPED');
   assert.equal(s.completed_rounds, MAX_ROUNDS);
-  assert.equal(s.head_sha, sha('c'));
+  assert.equal(s.head_sha, sha('d'));
 });
 
 test('round 2 with FIXED + evidence reaches READY; FIXED without evidence does not', async () => {
-  for (const [evidence, expected] of [['loop now flushes the last chunk (src/f00.js:12)', 'READY'], ['', 'STOPPED']]) {
+  for (const [evidence, expected] of [['loop now flushes the last chunk (src/f00.js:12)', 'READY'], ['', 'CHANGES_REQUESTED']]) {
     const gh = fakeGithub({ head: sha('a') });
     const ctx = makeContext(files(2));
     await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [P2] })), ctx });
@@ -207,7 +213,7 @@ test('a repeated report of an old FIXED or P3 issue is not hidden by the old ver
   gh.head = sha('b'); // round 2: the same title now comes back as P2
   await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [P2] })), ctx });
   const s = stateOf(gh);
-  assert.equal(s.status, 'STOPPED');
+  assert.equal(s.status, 'CHANGES_REQUESTED');
   assert.equal(s.findings.length, 1, 'same issue keeps its id');
   assert.equal(s.findings[0].severity, 'P2');
 });
