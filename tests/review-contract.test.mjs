@@ -47,7 +47,10 @@ test('contradictory states are invalid: READY with a blocker, READY off the conc
   assert.ok(!validateState({ ...done, findings: [finding] }).ok);
   assert.ok(!validateState({ ...done, completed_head_sha: sha('b') }).ok);
   assert.ok(!validateState({ ...done, status: 'CHANGES_REQUESTED' }).ok);
-  assert.ok(!validateState({ ...done, completed_rounds: 3 }).ok);
+  assert.ok(validateState({ ...done, completed_rounds: 3 }).ok, 'third round READY is valid');
+  assert.ok(!validateState({ ...done, completed_rounds: 4 }).ok);
+  assert.ok(validateState({ ...done, status: 'CHANGES_REQUESTED', completed_rounds: 2, findings: [finding] }).ok, 'round two may request another fix');
+  assert.ok(!validateState({ ...done, status: 'CHANGES_REQUESTED', completed_rounds: 3, findings: [finding] }).ok, 'the third round is final');
   assert.ok(validateState({ ...done, attempts_used: MAX_ATTEMPTS }).ok);
   assert.ok(!validateState({ ...done, attempts_used: MAX_ATTEMPTS + 1 }).ok);
   assert.ok(!validateState({ ...done, completed_rounds: 0 }).ok);
