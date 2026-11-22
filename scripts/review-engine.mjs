@@ -63,7 +63,7 @@ export function planRun({ pr, requestedHead, read, now = Date.now(), mergeBase }
   if (rebased && state.completed_head_sha === pr.head_sha) state = reopened(state);
   if (state.completed_head_sha === pr.head_sha) return { action: 'reuse', reason: 'a complete review already exists for this HEAD', state };
   if (state.completed_rounds >= MAX_ROUNDS) {
-    return { action: 'budget_stop', reason: `Both review rounds are used (${MAX_ROUNDS}/${MAX_ROUNDS}); HEAD ${pr.head_sha.slice(0, 12)} was not reviewed and no further automatic round starts.`, state, ...(rebased ? { rebase: mergeBase } : {}) };
+    return { action: 'budget_stop', reason: `All review rounds are used (${MAX_ROUNDS}/${MAX_ROUNDS}); HEAD ${pr.head_sha.slice(0, 12)} was not reviewed and no further automatic round starts.`, state, ...(rebased ? { rebase: mergeBase } : {}) };
   }
   if (state.attempts_used >= MAX_ATTEMPTS) {
     return { action: 'budget_stop', reason: `Model execution budget used up (${MAX_ATTEMPTS}/${MAX_ATTEMPTS}); HEAD ${pr.head_sha.slice(0, 12)} cannot be reviewed automatically.`, state, ...(rebased ? { rebase: mergeBase } : {}) };
@@ -263,7 +263,7 @@ export function concludeRound(state, now) {
     next.reason = `Round ${round} complete: all ${state.scope.total_files} reviewable file(s) were covered and there is no unresolved P0-P2 finding (P3 items are suggestions).${skipped}`;
   } else if (round < MAX_ROUNDS) {
     next.status = 'CHANGES_REQUESTED';
-    next.reason = `Round ${round} complete: ${blocking.length} blocking finding(s) (P0-P2). Fix them together, run local checks, then push once for the final round.${skipped}`;
+    next.reason = `Round ${round} complete: ${blocking.length} blocking finding(s) (P0-P2). Fix them together, run local checks, then push once for review round ${round + 1} of ${MAX_ROUNDS}.${skipped}`;
   } else {
     const open = blocking.filter((f) => f.verification !== 'OPEN').length;
     next.status = 'STOPPED';
