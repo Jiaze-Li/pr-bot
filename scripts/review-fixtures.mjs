@@ -43,7 +43,7 @@ export function buildFixtureCases() {
       comment_body: body ?? (state ? renderComment(state) : ''), expected,
     });
   };
-  const h1 = sha('a'); const h2 = sha('b'); const h3 = sha('c');
+  const h1 = sha('a'); const h2 = sha('b'); const h3 = sha('c'); const h4 = sha('d');
 
   const ready1 = attempt({ head: h1, output: modelOutput() });
   add({ name: 'round 1 complete, READY', state: ready1, head: h1, expected: { trusted: true, decision: decisionOf(ready1) } });
@@ -52,13 +52,19 @@ export function buildFixtureCases() {
   const fixed = attempt({ prev: changes, head: h2, output: modelOutput({ prior: [{ id: 'F001', verification: 'FIXED', evidence: 'chunk loop fixed' }] }) });
   add({ name: 'round 2 complete, earlier blocker verified FIXED, READY', state: fixed, head: h2, expected: { trusted: true, decision: decisionOf(fixed) } });
   const unfixed = attempt({ prev: changes, head: h2, output: modelOutput({ prior: [{ id: 'F001', verification: 'STILL_OPEN', evidence: 'still skipped' }] }) });
-  add({ name: 'round 2 complete, blocker STILL_OPEN, STOPPED', state: unfixed, head: h2, expected: { trusted: true, decision: decisionOf(unfixed) } });
+  add({ name: 'round 2 complete, blocker STILL_OPEN, CHANGES_REQUESTED', state: unfixed, head: h2, expected: { trusted: true, decision: decisionOf(unfixed) } });
   const omitted = attempt({ prev: changes, head: h2, output: modelOutput() });
-  add({ name: 'round 2 complete, blocker omitted (never counts as fixed), STOPPED', state: omitted, head: h2, expected: { trusted: true, decision: decisionOf(omitted) } });
-  const third = planRun({ pr: { state: 'open', draft: false, head_sha: h3 }, requestedHead: h3, read: { kind: 'ok', state: fixed }, now: NOW });
-  if (third.action !== 'budget_stop') throw new Error(`policy no longer stops a third round: ${third.action}`);
-  const budget = stoppedState({ prev: fixed, repo: REPO, prNumber: PR, head: h3, reason: third.reason, now: NOW });
-  add({ name: 'both rounds used, new HEAD is not reviewed, STOPPED', state: budget, head: h3, expected: { trusted: true, decision: decisionOf(budget) } });
+  add({ name: 'round 2 complete, blocker omitted (never counts as fixed), CHANGES_REQUESTED', state: omitted, head: h2, expected: { trusted: true, decision: decisionOf(omitted) } });
+  const verifiedThird = attempt({ prev: unfixed, head: h3, output: modelOutput({ prior: [{ id: 'F001', verification: 'FIXED', evidence: 'final chunk is present at src/a.js:30' }] }) });
+  add({ name: 'round 3 complete, prior P1 verified FIXED, READY', state: verifiedThird, head: h3, expected: { trusted: true, decision: decisionOf(verifiedThird) } });
+  const omittedThird = attempt({ prev: unfixed, head: h3, output: modelOutput() });
+  add({ name: 'round 3 complete, prior P1 omitted, STOPPED', state: omittedThird, head: h3, expected: { trusted: true, decision: decisionOf(omittedThird) } });
+  const docsAfterReady = attempt({ prev: fixed, head: h3, output: modelOutput({ prior: [{ id: 'F001', verification: 'FIXED', evidence: 'original fix still holds on this HEAD' }] }) });
+  add({ name: 'round 3 after round-2 READY verifies its previous fix again, READY', state: docsAfterReady, head: h3, expected: { trusted: true, decision: decisionOf(docsAfterReady) } });
+  const fourth = planRun({ pr: { state: 'open', draft: false, head_sha: h4 }, requestedHead: h4, read: { kind: 'ok', state: verifiedThird }, now: NOW });
+  if (fourth.action !== 'budget_stop') throw new Error(`policy no longer stops a fourth round: ${fourth.action}`);
+  const budget = stoppedState({ prev: verifiedThird, repo: REPO, prNumber: PR, head: h4, reason: fourth.reason, now: NOW });
+  add({ name: 'three rounds used, fourth HEAD is not reviewed, STOPPED', state: budget, head: h4, expected: { trusted: true, decision: decisionOf(budget) } });
 
   const partial = attempt({ head: h1, output: modelOutput({ findings: [P2], reviewed: ['src/a.js'], unreviewed: ['src/b.js'], complete: false }) });
   add({ name: 'same-round progress with a P2 is IN_PROGRESS, never CHANGES_REQUESTED', state: partial, head: h1, expected: { trusted: true, decision: decisionOf(partial) } });
@@ -92,7 +98,7 @@ export function buildFixtureCases() {
   if (drift.action !== 'budget_stop' || !drift.rebase) throw new Error(`policy no longer stops an exhausted base drift: ${drift.action}`);
   const driftStop = stoppedState({ prev: drift.state, repo: REPO, prNumber: PR, head: h2, reason: drift.reason, now: NOW, scope: { ...drift.state.scope, merge_base_sha: drift.rebase } });
   add({ name: 'budget exhausted after merge-base drift: STOPPED for the current HEAD is reported, never an endless WAIT', state: driftStop, head: h2, base: moved, expected: { trusted: true, decision: 'STOPPED' } });
-  add({ name: 'a STOPPED whose last reviewed merge-base is stale is still reported', state: budget, head: h3, base: moved, expected: { trusted: true, decision: 'STOPPED' } });
+  add({ name: 'a STOPPED whose last reviewed merge-base is stale is still reported', state: budget, head: h4, base: moved, expected: { trusted: true, decision: 'STOPPED' } });
 
   const running = claimAttempt({ prev: null, repo: REPO, prNumber: PR, head: h1, scope: SCOPE, now: NOW });
   add({ name: 'review still IN_PROGRESS', state: running, head: h1, expected: { trusted: true, decision: decisionOf(running) } });
