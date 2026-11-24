@@ -221,5 +221,5 @@ test('failed primary and failed fallback each increment consecutiveFailures and 
   assert.equal(second.result.status, 'STOPPED');
   assert.equal(stateOf(second.gh).attempts_used, 4);
   assert.equal(stateOf(second.gh).stalled_attempts, 4);
-  assert.match(stateOf(second.gh).reason, /Repeated attempts on this HEAD made no progress/);
+  assert.match(stateOf(second.gh).reason, /No further automatic attempt for this HEAD/);
 });
