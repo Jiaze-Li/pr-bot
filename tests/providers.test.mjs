@@ -344,3 +344,46 @@ test('schema instructions are generated from the real schema', () => {
   assert.equal(gemini.properties.findings.maxItems, 20);
   assert.equal(gemini.properties.coverage.properties.reviewedPaths.items.type, 'string');
 });
+
+test('DeepSeek and Gemini receive real Read/Glob/Grep tool declarations from a ReadOnlyToolGateway instance', async () => {
+  const realGateway = new ReadOnlyToolGateway({ safeRoot: process.cwd(), contextRoot: null, maxCalls: 4 });
+
+  const deepseekSeen = [];
+  const deepseekFetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    deepseekSeen.push(body);
+    return { ok: true, status: 200, async json() { return { model: 'deepseek-flash', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(VALID) } }] }; } };
+  };
+  const dsOutcome = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: realGateway, fetchImpl: deepseekFetch, env: { DEEPSEEK_API_KEY: 'k' } });
+  assert.equal(dsOutcome.ok, true, dsOutcome.error);
+  assert.deepEqual(deepseekSeen[0].tools.map((t) => t.function.name), ['Read', 'Glob', 'Grep']);
+
+  const geminiSeen = [];
+  const geminiFetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    geminiSeen.push(body);
+    return { ok: true, status: 200, async json() { return { modelVersion: 'gemini-flash-latest', candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ text: JSON.stringify(VALID) }] } }] }; } };
+  };
+  const gmOutcome = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: realGateway, fetchImpl: geminiFetch, env: { GEMINI_API_KEY: 'k' } });
+  assert.equal(gmOutcome.ok, true, gmOutcome.error);
+  assert.deepEqual(geminiSeen[0].tools[0].functionDeclarations.map((d) => d.name), ['Read', 'Glob', 'Grep']);
+});
+
+test('Gemini turn ending in MAX_TOKENS or SAFETY with no function calls fails as execution (triggers fallback)', async () => {
+  for (const finishReason of ['MAX_TOKENS', 'SAFETY']) {
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          modelVersion: 'gemini-flash-latest',
+          candidates: [{ finishReason, content: { role: 'model', parts: [{ text: 'partial' }] } }],
+        };
+      },
+    });
+    const outcome = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), fetchImpl, env: { GEMINI_API_KEY: 'k' } });
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.errorKind, 'execution');
+    assert.match(outcome.error, new RegExp(finishReason));
+  }
+});

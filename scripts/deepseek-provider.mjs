@@ -5,7 +5,7 @@
 // descriptions and JSON Schemas of `Read`/`Glob`/`Grep`. No GitHub credential is passed to this module, and no
 // request is retried inside it: one call here is one attempt in the PR's budget, charged by the caller.
 import {
-  baseMeta, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, statusClass, validateResult,
+  baseMeta, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
 } from './provider-common.mjs';
 
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
@@ -37,10 +37,10 @@ export function schemaInstruction(schema) {
   ].join('\n');
 }
 
-const toolNames = (toolGateway) => new Set((toolGateway.getToolDeclarations?.() ?? []).map((t) => t.name));
+const toolNames = (toolGateway) => new Set(readToolDeclarations(toolGateway).map((t) => t.name));
 
 function toolDeclarations(toolGateway) {
-  return (toolGateway.getToolDeclarations?.() ?? []).map((decl) => ({
+  return readToolDeclarations(toolGateway).map((decl) => ({
     type: 'function',
     function: { name: decl.name, description: decl.description, parameters: decl.parameters },
   }));

@@ -4,7 +4,7 @@
 // Used only when the primary provider fails to execute. Nothing here decides whether a review is good enough; that
 // is the executor's job. One call here is one attempt in the PR's budget, charged by the caller.
 import {
-  baseMeta, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, statusClass, validateResult,
+  baseMeta, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
 } from './provider-common.mjs';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
@@ -131,7 +131,7 @@ export async function runGemini({
     }
   };
 
-  const declarations = (toolGateway.getToolDeclarations?.() ?? []).map((decl) => ({
+  const declarations = readToolDeclarations(toolGateway).map((decl) => ({
     name: decl.name, description: decl.description, parameters: toGeminiJsonSchema(decl.parameters),
   }));
   const allowed = new Set(declarations.map((d) => d.name));
@@ -155,11 +155,11 @@ export async function runGemini({
       const functionCalls = parts.filter((part) => part?.functionCall);
       // Every model part (text, functionCall, thoughtSignature) must go back verbatim in later turns.
       if (parts.length) contents.push({ role: 'model', parts: parts.map((part) => ({ ...part })) });
-      if (!functionCalls.length) break;
       if (candidate?.finishReason && ['MAX_TOKENS', 'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT'].includes(candidate.finishReason)) {
         return failure('execution', `Gemini stopped with finishReason=${candidate.finishReason}`,
           finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
+      if (!functionCalls.length) break;
       if (toolCalls + functionCalls.length > maxTurns * 4) {
         return failure('turns', `Gemini exceeded the tool call limit (${maxTurns * 4})`,
           finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));

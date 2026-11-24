@@ -122,3 +122,9 @@ export function statusClass(status) {
   if (status === 404) return 'config';
   return 'execution';
 }
+
+// `ReadOnlyToolGateway.getToolDeclarations` is static on the real class, while test doubles may define it on the
+// instance. Checking both keeps every provider wired to the real Read/Glob/Grep schemas.
+export function readToolDeclarations(toolGateway) {
+  return toolGateway?.getToolDeclarations?.() ?? toolGateway?.constructor?.getToolDeclarations?.() ?? [];
+}
