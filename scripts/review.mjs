@@ -252,43 +252,80 @@ Severity: P0 catastrophic; P1 high-impact bug/security; P2 normal actionable bug
 
 // ---------------------------------------------------------------- the production provider
 
-export async function createProvider({ env = process.env, cwd = process.cwd(), runModel = null } = {}) {
+// The reads that count as coverage evidence are the gateway's own log of successful Read calls: which real file,
+// which lines. They belong to the execution that produced the result, so each execution gets a fresh gateway.
+function collectReads(toolGateway) {
+  const reads = new Map();
+  const keyOf = (file) => {
+    for (const [prefix, root] of [['safe', toolGateway.safeRoot], ['ctx', toolGateway.contextRoot]]) {
+      const relative = root ? path.relative(root, file) : '..';
+      if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) return `${prefix}:${relative.split(path.sep).join('/')}`;
+    }
+    return null;
+  };
+  for (const entry of toolGateway.history ?? []) {
+    if (entry.toolName !== 'Read' || entry.status !== 'success' || !entry.read || entry.read.from === null) continue;
+    const key = keyOf(entry.read.file);
+    if (!key) continue;
+    const known = reads.get(key) ?? { total: entry.read.totalLines, spans: [] };
+    known.spans.push([entry.read.from, entry.read.to]);
+    reads.set(key, known);
+  }
+  return reads;
+}
+
+export async function createProvider({ env = process.env, cwd = process.cwd(), runModel = null, runFallbackModel = null } = {}) {
   const { ReadOnlyToolGateway } = await import('./tool-gateway.mjs');
+  const { resolveProviderConfig, providerRunner, providerCredentialProblem } = await import('./model-provider.mjs');
   const limits = resolveLimits(env);
   const contextRoot = path.resolve(env.REVIEW_CONTEXT_DIR ?? '.review-context');
   const safeRoot = path.resolve(env.SAFE_REPO_DIR ?? 'safe-target');
-  const call = runModel ?? (await import('./claude-provider.mjs')).runClaude;
+  let config;
+  let configError = null;
+  try {
+    config = resolveProviderConfig(env);
+  } catch (error) {
+    // Reported through preflight so the executor posts the reason instead of dying before it can say why.
+    configError = error;
+    config = { primary: { name: 'claude', model: 'sonnet' }, fallback: null };
+  }
+  const selected = {
+    primary: { name: config.primary.name, model: config.primary.model, injected: runModel },
+    fallback: config.fallback ? { name: config.fallback.name, model: config.fallback.model, injected: runFallbackModel } : null,
+  };
+
+  async function execute(entry, { prompt, ignore, fallback = false }) {
+    const toolGateway = new ReadOnlyToolGateway({
+      safeRoot, contextRoot, cwd, ignorePatterns: ignore, maxCalls: limits.maxTurns * 4,
+      allowedContextFiles: ['pr.diff', 'changed-files.txt', 'diff-stat.txt', 'pr.json', 'skipped-files.txt'],
+    });
+    const call = entry.injected ?? providerRunner(entry.name);
+    const outcome = await call({
+      prompt, schema: RESULT_SCHEMA, toolGateway, cwd, env, model: entry.model, fallback,
+      maxTurns: limits.maxTurns, maxBudgetUsd: limits.maxBudgetUsd, timeoutMs: limits.timeoutMs,
+    });
+    return { ...outcome, reads: collectReads(toolGateway) };
+  }
+
   return {
     limits, contextRoot, safeRoot,
+    name: selected.primary.name,
+    fallbackName: selected.fallback?.name ?? null,
+    get canFallback() { return selected.fallback !== null; },
     // Checked BEFORE an attempt is recorded: a misconfiguration must not burn the budget.
     preflight() {
-      if (!env.CLAUDE_CODE_OAUTH_TOKEN && !runModel) throw new Error('CLAUDE_CODE_OAUTH_TOKEN is not configured');
+      if (configError) throw configError;
+      for (const entry of [selected.primary, selected.fallback].filter(Boolean)) {
+        if (entry.injected) continue;
+        const problem = providerCredentialProblem(entry.name, env);
+        if (problem) throw new Error(`${entry.name} review provider: ${problem}`);
+      }
       if (!fs.existsSync(safeRoot)) throw new Error('safe source snapshot is missing');
     },
-    async run({ prompt, ignore }) {
-      const toolGateway = new ReadOnlyToolGateway({
-        safeRoot, contextRoot, cwd, ignorePatterns: ignore, maxCalls: limits.maxTurns * 4,
-        allowedContextFiles: ['pr.diff', 'changed-files.txt', 'diff-stat.txt', 'pr.json', 'skipped-files.txt'],
-      });
-      const outcome = await call({ prompt, schema: RESULT_SCHEMA, toolGateway, cwd, env, maxTurns: limits.maxTurns, maxBudgetUsd: limits.maxBudgetUsd, timeoutMs: limits.timeoutMs });
-      // Coverage evidence comes only from the gateway's own log of Reads that succeeded: which real file, which lines.
-      const reads = new Map();
-      const keyOf = (file) => {
-        for (const [prefix, root] of [['safe', toolGateway.safeRoot], ['ctx', toolGateway.contextRoot]]) {
-          const relative = root ? path.relative(root, file) : '..';
-          if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) return `${prefix}:${relative.split(path.sep).join('/')}`;
-        }
-        return null;
-      };
-      for (const entry of toolGateway.history ?? []) {
-        if (entry.toolName !== 'Read' || entry.status !== 'success' || !entry.read || entry.read.from === null) continue;
-        const key = keyOf(entry.read.file);
-        if (!key) continue;
-        const known = reads.get(key) ?? { total: entry.read.totalLines, spans: [] };
-        known.spans.push([entry.read.from, entry.read.to]);
-        reads.set(key, known);
-      }
-      return { ...outcome, reads };
+    async run({ prompt, ignore, fallback = false }) {
+      const entry = fallback && selected.fallback ? selected.fallback : selected.primary;
+      const outcome = await execute(entry, { prompt, ignore, fallback });
+      return { ...outcome, meta: { ...(outcome.meta ?? {}), provider: outcome.meta?.provider ?? entry.name } };
     },
   };
 }
@@ -405,6 +442,9 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
   let consecutiveFailures = 0;
   let shrink = 0;
   let batchNo = 0;
+  // A failed execution retries the SAME batch with the fallback provider. It is not a free retry: the next loop
+  // iteration records a new attempt before calling it, so the PR's 30-execution budget bounds both providers.
+  let pendingFallback = null;
 
   if (scopeFiles.length === 0) { // nothing reviewable: the round concludes without a model call
     const claimed = claimAttempt({ prev: current, repo: target, prNumber, head, scope, now: now(), spend: false });
@@ -440,27 +480,40 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
     await store.write(claimed); // the attempt is durable BEFORE the model is called; if this fails, no model runs
     await project(github, claimed, log);
 
-    batchNo += 1;
-    const assigned = nextBatch({ remaining, bytesOf: (file) => byPath.get(file).bytes, readsOf, maxReads: turnReads, shrink });
-    const { text: diffText, needsRead } = inlineDiffs({ assigned, byPath });
-    const pendingBlockers = claimed.findings.filter((f) => isBlocking(f) && f.checked_head_sha !== head);
-    const prompt = buildPrompt({
-      repo: target, prNumber, head, round: claimed.completed_rounds + 1, pr, assigned, diffText, needsRead, batchNo, maxTurns: limits.maxTurns,
-      otherFiles: scopeFiles.filter((file) => !assigned.includes(file)), deleted, pendingBlockers,
-    });
+    let batch = pendingFallback;
+    pendingFallback = null;
+    if (!batch) {
+      batchNo += 1;
+      const assigned = nextBatch({ remaining, bytesOf: (file) => byPath.get(file).bytes, readsOf, maxReads: turnReads, shrink });
+      const { text: diffText, needsRead } = inlineDiffs({ assigned, byPath });
+      const pendingBlockers = claimed.findings.filter((f) => isBlocking(f) && f.checked_head_sha !== head);
+      const prompt = buildPrompt({
+        repo: target, prNumber, head, round: claimed.completed_rounds + 1, pr, assigned, diffText, needsRead, batchNo, maxTurns: limits.maxTurns,
+        otherFiles: scopeFiles.filter((file) => !assigned.includes(file)), deleted, pendingBlockers,
+      });
+      batch = { assigned, needsRead, prompt, isFallback: false };
+    }
 
     modelCalls += 1;
     let outcome;
     const callStarted = now();
     try {
-      outcome = await provider.run({ prompt, ignore });
+      outcome = await provider.run({ prompt: batch.prompt, ignore, fallback: batch.isFallback });
     } catch (error) {
       outcome = { ok: false, error: `Review attempt crashed: ${String(error.message).slice(0, 200)}`, errorKind: 'exception' };
     }
+    const meta = outcome?.meta ?? {};
     emitDiagnostics(log, {
-      repo: target, pr: prNumber, head, attempt: claimed.attempts_used, batch: assigned.length, ok: Boolean(outcome?.ok), error_kind: outcome?.ok ? null : String(outcome?.errorKind ?? 'unknown').slice(0, 40),
-      turns: knownNumber(outcome?.meta?.num_turns), max_turns: limits.maxTurns, input_tokens: knownNumber(outcome?.meta?.input_tokens), output_tokens: knownNumber(outcome?.meta?.output_tokens),
-      cost_usd_nominal: knownNumber(outcome?.meta?.cost_usd_nominal), usd_cap: limits.maxBudgetUsd, cost_note: 'SDK nominal estimate, not an actual bill', duration_ms: now() - callStarted,
+      repo: target, pr: prNumber, head, attempt: claimed.attempts_used, batch: batch.assigned.length, ok: Boolean(outcome?.ok), error_kind: outcome?.ok ? null : String(outcome?.errorKind ?? 'unknown').slice(0, 40),
+      provider: meta.provider ?? (batch.isFallback ? provider.fallbackName : provider.name) ?? null, model: meta.resolved_model ?? meta.requested_model ?? null, effort: meta.effort ?? null,
+      fallback: batch.isFallback, turns: knownNumber(meta.num_turns), max_turns: limits.maxTurns, tool_calls: knownNumber(meta.tool_calls),
+      input_tokens: knownNumber(meta.input_tokens), output_tokens: knownNumber(meta.output_tokens), thoughts_tokens: knownNumber(meta.thoughts_tokens),
+      total_tokens: knownNumber(meta.total_tokens), cache_read_input_tokens: knownNumber(meta.cache_read_input_tokens),
+      cost_usd_nominal: knownNumber(meta.cost_usd_nominal), cost_source: meta.cost_source ?? 'unknown', usd_cap: limits.maxBudgetUsd,
+      cost_note: meta.cost_source === 'sdk' ? 'SDK nominal estimate, not an actual bill'
+        : meta.cost_source === 'configured-prices' ? 'nominal estimate from configured per-Mtok prices, not an actual bill'
+          : 'no price information available; actual cost not reported',
+      duration_ms: now() - callStarted,
     });
 
     // A result for a HEAD that is no longer current is never credited, whatever it says.
@@ -469,6 +522,14 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
     if (liveHead !== head) return finish(discardAttempt(claimed, liveHead, now()), { modelCalls });
 
     const parsed = outcome?.ok ? parseBatchOutput(outcome.structured) : { ok: false, error: outcome?.error ?? 'no result' };
+    // Fallback is for EXECUTION failure only: the provider could not produce a usable result. A result the model did
+    // produce (even a weak review, or one whose coverage claim cannot be credited) is never re-rolled on another model.
+    if (!parsed.ok && !outcome?.ok && !batch.isFallback && provider.canFallback) {
+      log(`attempt ${claimed.attempts_used} failed to execute (${String(parsed.error).slice(0, 160)}); retrying the same batch with ${provider.fallbackName}, charged as another attempt`);
+      current = claimed; // the spent attempt stays recorded; the next iteration claims the fallback's own attempt
+      pendingFallback = { ...batch, isFallback: true };
+      continue;
+    }
     if (!parsed.ok) {
       log(`attempt ${claimed.attempts_used} unusable: ${String(parsed.error).slice(0, 200)}`);
       current = failAttempt(claimed, now());
@@ -477,9 +538,9 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
       await store.write(current);
       continue;
     }
-    const applied = applyBatch({ state: claimed, assigned, output: parsed.value, needsRead, reads: outcome.reads ?? new Map(), now: now() });
+    const applied = applyBatch({ state: claimed, assigned: batch.assigned, output: parsed.value, needsRead: batch.needsRead, reads: outcome.reads ?? new Map(), now: now() });
     if (applied.overflow) return finish(overflowState(applied.state, now()));
-    if (applied.credited.length === 0) { consecutiveFailures += 1; shrink = Math.min(shrink + 1, 4); } else { consecutiveFailures = 0; shrink = applied.credited.length < assigned.length ? Math.min(shrink + 1, 4) : 0; }
+    if (applied.credited.length === 0) { consecutiveFailures += 1; shrink = Math.min(shrink + 1, 4); } else { consecutiveFailures = 0; shrink = applied.credited.length < batch.assigned.length ? Math.min(shrink + 1, 4) : 0; }
 
     if (isCovered(applied.state, scopeFiles)) return finish(concludeRound(applied.state, now())); // progress, conclusion and round count in ONE write
     current = applied.state;

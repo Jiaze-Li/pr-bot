@@ -1,5 +1,6 @@
-// The only model call in the system: one Claude Agent SDK query with host-enforced, read-only tools and a
-// schema-validated structured result. No other provider, no fallback chain, no registry.
+// The only Claude model call in the system: one Claude Agent SDK query with host-enforced, read-only tools and a
+// schema-validated structured result. Provider selection (Claude / DeepSeek / Gemini, one optional fallback) lives in
+// model-provider.mjs; this file knows nothing about it.
 //
 // The model runs with an isolated environment (no GitHub credentials), the tool gateway as its only tools, and hard
 // per-call limits. total_cost_usd is the SDK's own nominal estimate, never an actual bill.
@@ -10,7 +11,7 @@ export const SYSTEM_PROMPT = 'You are a security-conscious senior code reviewer.
 
 const num = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null);
 
-const failure = (errorKind, error, meta) => ({ ok: false, errorKind, error: String(error).slice(0, 300), structured: null, meta });
+const failure = (errorKind, error, meta) => ({ ok: false, errorKind, error: String(error).slice(0, 300), structured: null, meta: { provider: 'claude', ...meta } });
 
 // -> { ok, structured, errorKind, error, meta: { resolved_model, num_turns, duration_ms, cost_usd_nominal, input_tokens, output_tokens } }
 export async function runClaude({
@@ -54,8 +55,9 @@ export async function runClaude({
     clearTimeout(timer);
   }
   const meta = {
-    resolved_model: resolvedModel ?? model, max_turns: maxTurns, num_turns: num(result?.num_turns), duration_ms: num(result?.duration_ms) ?? (Date.now() - startedAt),
-    cost_usd_nominal: num(result?.total_cost_usd), input_tokens: num(result?.usage?.input_tokens), output_tokens: num(result?.usage?.output_tokens),
+    provider: 'claude', requested_model: model, resolved_model: resolvedModel ?? model, max_turns: maxTurns, num_turns: num(result?.num_turns), duration_ms: num(result?.duration_ms) ?? (Date.now() - startedAt),
+    cost_usd_nominal: num(result?.total_cost_usd), cost_source: num(result?.total_cost_usd) !== null ? 'sdk' : 'unknown',
+    input_tokens: num(result?.usage?.input_tokens), output_tokens: num(result?.usage?.output_tokens),
   };
   if (!result) return failure('execution', 'Claude produced no result', meta);
   if (result.subtype !== 'success') {
