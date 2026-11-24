@@ -192,15 +192,34 @@ test('provider configuration defaults to Claude with no fallback and rejects unk
   assert.equal(providerCredentialProblem('gemini', { GEMINI_API_KEY: 'k' }), null);
 });
 
-test('failed primary and failed fallback each increment stalled_attempts, stopping at STALL_LIMIT (4)', async () => {
+test('failed primary and failed fallback each increment consecutiveFailures and stalled_attempts', async () => {
   const { gh, result, primaryCalls, fallbackCalls } = await run({
     changed: files(2),
     primary: () => model.fail('primary down'),
     fallback: () => model.fail('fallback down'),
   });
   assert.equal(result.status, 'STOPPED');
-  assert.equal(primaryCalls.length, 2);
-  assert.equal(fallbackCalls.length, 2);
-  assert.equal(stateOf(gh).attempts_used, 4);
-  assert.equal(stateOf(gh).stalled_attempts, 4);
+  assert.equal(primaryCalls.length, 1);
+  assert.equal(fallbackCalls.length, 1);
+  assert.equal(stateOf(gh).attempts_used, 2);
+  assert.equal(stateOf(gh).stalled_attempts, 2);
+  assert.match(stateOf(gh).reason, /2 consecutive attempts made no progress/);
+
+  const changed = files(2);
+  const seed = {
+    schema_version: 2, repo: REPO, pr_number: PR, head_sha: sha('a'), status: 'STOPPED',
+    reason: '2 consecutive attempts made no progress', completed_rounds: 0, completed_head_sha: null,
+    attempts_used: 2, stalled_attempts: 2, scope: makeScope({ mergeBase: MERGE_BASE, files: changed }),
+    reviewed_files: [], findings: [], updated_at: '2026-11-24T00:00:00.000Z',
+  };
+  const second = await run({
+    changed,
+    seed,
+    primary: () => model.fail('primary down'),
+    fallback: () => model.fail('fallback down'),
+  });
+  assert.equal(second.result.status, 'STOPPED');
+  assert.equal(stateOf(second.gh).attempts_used, 4);
+  assert.equal(stateOf(second.gh).stalled_attempts, 4);
+  assert.match(stateOf(second.gh).reason, /Repeated attempts on this HEAD made no progress/);
 });
