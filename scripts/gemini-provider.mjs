@@ -156,7 +156,7 @@ export async function runGemini({
       // Every model part (text, functionCall, thoughtSignature) must go back verbatim in later turns.
       if (parts.length) contents.push({ role: 'model', parts: parts.map((part) => ({ ...part })) });
       if (candidate?.finishReason && ['MAX_TOKENS', 'SAFETY', 'RECITATION', 'BLOCKLIST', 'PROHIBITED_CONTENT'].includes(candidate.finishReason)) {
-        return failure('execution', `Gemini stopped with finishReason=${candidate.finishReason}`,
+        return failure(candidate.finishReason === 'MAX_TOKENS' ? 'malformed' : 'execution', `Gemini stopped with finishReason=${candidate.finishReason}`,
           finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
       if (!functionCalls.length) break;

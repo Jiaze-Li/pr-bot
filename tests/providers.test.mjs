@@ -369,21 +369,26 @@ test('DeepSeek and Gemini receive real Read/Glob/Grep tool declarations from a R
   assert.deepEqual(geminiSeen[0].tools[0].functionDeclarations.map((d) => d.name), ['Read', 'Glob', 'Grep']);
 });
 
-test('Gemini turn ending in MAX_TOKENS or SAFETY with no function calls fails as execution (triggers fallback)', async () => {
-  for (const finishReason of ['MAX_TOKENS', 'SAFETY']) {
-    const fetchImpl = async () => ({
-      ok: true,
-      status: 200,
-      async json() {
-        return {
-          modelVersion: 'gemini-flash-latest',
-          candidates: [{ finishReason, content: { role: 'model', parts: [{ text: 'partial' }] } }],
-        };
-      },
-    });
+test('Gemini turn ending in MAX_TOKENS or SAFETY with no function calls fails immediately without falling through', async () => {
+  for (const [finishReason, expectedKind] of [['MAX_TOKENS', 'malformed'], ['SAFETY', 'execution']]) {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            modelVersion: 'gemini-flash-latest',
+            candidates: [{ finishReason, content: { role: 'model', parts: [{ text: 'partial' }] } }],
+          };
+        },
+      };
+    };
     const outcome = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), fetchImpl, env: { GEMINI_API_KEY: 'k' } });
     assert.equal(outcome.ok, false);
-    assert.equal(outcome.errorKind, 'execution');
+    assert.equal(outcome.errorKind, expectedKind);
+    assert.equal(calls, 1);
     assert.match(outcome.error, new RegExp(finishReason));
   }
 });
