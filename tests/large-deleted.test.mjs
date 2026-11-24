@@ -315,7 +315,7 @@ test('whole-PR preflight: 26 and 60 files fit; capacity over the lifetime budget
     assert.equal(r.status, 'READY', `${n} files`);
     assert.equal(p.calls.length, Math.ceil(n / 10));
   }
-  for (const n of [MAX_ATTEMPTS * 10 + 1, 156]) {
+  for (const n of [MAX_ATTEMPTS * 10 + 1, MAX_ATTEMPTS * 10 + 16]) {
     const gh = fakeGithub();
     const p = scriptedProvider(ok);
     const r = await review({ gh, provider: p, ctx: makeContext(names(n).concat(Array.from({ length: Math.max(0, n - 100) }, (_, i) => `docs/x${i}.md`)).slice(0, n)) });
@@ -331,7 +331,7 @@ test('whole-PR preflight: 26 and 60 files fit; capacity over the lifetime budget
 test('preflight counts what is left: progress already credited and attempts already spent are taken into account', async () => {
   const gh = fakeGithub();
   const files = names(30);
-  // two batches done, then the run stops; 3 batches in total are needed, 8 attempts remain
+  // two batches done, then the run stops; 3 batches in total are needed
   const crash = scriptedProvider((c) => (c.n <= 2 ? ok(c) : model.fail('boom')));
   await review({ gh, provider: crash, ctx: makeContext(files) });
   assert.equal(stateOf(gh).reviewed_files.length, 20);

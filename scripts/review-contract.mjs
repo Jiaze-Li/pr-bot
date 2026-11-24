@@ -9,8 +9,8 @@ export const SCHEMA_VERSION = 2;
 export const STATUS_CONTEXT = 'claude-review-bot/review';
 export const BOT_LOGIN = 'jiaze-claude-review-bot[bot]';
 
-export const MAX_ROUNDS = 3; // complete review conclusions per PR; model-call cap remains 14
-export const MAX_ATTEMPTS = 14; // model executions per PR, ever
+export const MAX_ROUNDS = 3; // complete review conclusions per PR
+export const MAX_ATTEMPTS = 30; // model executions per PR, ever
 export const STALL_LIMIT = 4; // consecutive attempts on one HEAD that credited no new file
 export const MAX_FINDINGS = 40;
 export const MAX_SCOPE_FILES = 400;

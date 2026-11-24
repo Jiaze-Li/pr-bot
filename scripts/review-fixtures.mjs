@@ -57,6 +57,8 @@ export function buildFixtureCases() {
   add({ name: 'round 2 complete, blocker omitted (never counts as fixed), CHANGES_REQUESTED', state: omitted, head: h2, expected: { trusted: true, decision: decisionOf(omitted) } });
   const verifiedThird = attempt({ prev: unfixed, head: h3, output: modelOutput({ prior: [{ id: 'F001', verification: 'FIXED', evidence: 'final chunk is present at src/a.js:30' }] }) });
   add({ name: 'round 3 complete, prior P1 verified FIXED, READY', state: verifiedThird, head: h3, expected: { trusted: true, decision: decisionOf(verifiedThird) } });
+  const higherBudget = { ...verifiedThird, attempts_used: 18 };
+  add({ name: 'round 3 complete after 18 lifetime calls, READY', state: higherBudget, head: h3, expected: { trusted: true, decision: 'READY' } });
   const omittedThird = attempt({ prev: unfixed, head: h3, output: modelOutput() });
   add({ name: 'round 3 complete, prior P1 omitted, STOPPED', state: omittedThird, head: h3, expected: { trusted: true, decision: decisionOf(omittedThird) } });
   const docsAfterReady = attempt({ prev: fixed, head: h3, output: modelOutput({ prior: [{ id: 'F001', verification: 'FIXED', evidence: 'original fix still holds on this HEAD' }] }) });
