@@ -98,6 +98,15 @@ export function priceFromEnv(env, key) {
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+export function checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice = null }) {
+  if (meta.usd_cap === null || inputPrice === null || outputPrice === null) return null;
+  const spent = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice });
+  if (spent !== null && spent > meta.usd_cap) {
+    return `${meta.provider} nominal cost ${spent.toFixed(4)} exceeded the per-execution cap ${meta.usd_cap}`;
+  }
+  return null;
+}
+
 // A provider API key must only ever be sent to an https endpoint, or to a local test server. `allowAnyHost` exists
 // for providers whose base URL is meant to be swapped (DeepSeek -> an OpenAI-compatible gateway).
 export function normalizeBaseUrl(raw, { fallback, hosts = null }) {

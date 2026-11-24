@@ -4,7 +4,7 @@
 // Used only when the primary provider fails to execute. Nothing here decides whether a review is good enough; that
 // is the executor's job. One call here is one attempt in the PR's budget, charged by the caller.
 import {
-  baseMeta, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
+  baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
 } from './provider-common.mjs';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
@@ -149,6 +149,10 @@ export async function runGemini({
       const payload = await send({ contents, tools, generationConfig: { thinkingConfig, maxOutputTokens } });
       if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
       addUsage(payload?.usageMetadata);
+      const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+      if (budgetError) {
+        return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
+      }
       const candidate = payload?.candidates?.[0];
       lastCandidate = candidate;
       const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
@@ -212,6 +216,10 @@ export async function runGemini({
     });
     if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
     addUsage(payload?.usageMetadata);
+    const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+    if (budgetError) {
+      return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
+    }
     const candidate = payload?.candidates?.[0];
     if (candidate?.finishReason === 'MAX_TOKENS') {
       return failure('malformed', 'Gemini truncated the structured result (finishReason=MAX_TOKENS)',

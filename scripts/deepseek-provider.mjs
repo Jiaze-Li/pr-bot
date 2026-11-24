@@ -5,7 +5,7 @@
 // descriptions and JSON Schemas of `Read`/`Glob`/`Grep`. No GitHub credential is passed to this module, and no
 // request is retried inside it: one call here is one attempt in the PR's budget, charged by the caller.
 import {
-  baseMeta, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
+  baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
 } from './provider-common.mjs';
 
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
@@ -153,11 +153,9 @@ export async function runDeepSeek({
       });
       if (typeof payload?.model === 'string' && payload.model) resolvedModel = payload.model;
       addUsage(payload?.usage);
-      if (meta.usd_cap !== null && inputPrice !== null && outputPrice !== null) {
-        const spent = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
-        if (spent !== null && spent > meta.usd_cap) {
-          return failure('budget', `DeepSeek nominal cost ${spent.toFixed(4)} exceeded the per-execution cap ${meta.usd_cap}`, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-        }
+      const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+      if (budgetError) {
+        return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
       const choice = payload?.choices?.[0];
       const message = choice?.message;
@@ -243,6 +241,10 @@ export async function runDeepSeek({
     });
     if (typeof payload?.model === 'string' && payload.model) resolvedModel = payload.model;
     addUsage(payload?.usage);
+    const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+    if (budgetError) {
+      return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
+    }
     const choice = payload?.choices?.[0];
     if (choice?.finish_reason === 'length') {
       return failure('malformed', 'DeepSeek truncated the structured result (finish_reason=length)', finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));

@@ -191,3 +191,16 @@ test('provider configuration defaults to Claude with no fallback and rejects unk
   assert.match(providerCredentialProblem('claude', {}), /CLAUDE_CODE_OAUTH_TOKEN/);
   assert.equal(providerCredentialProblem('gemini', { GEMINI_API_KEY: 'k' }), null);
 });
+
+test('failed primary and failed fallback each increment stalled_attempts, stopping at STALL_LIMIT (4)', async () => {
+  const { gh, result, primaryCalls, fallbackCalls } = await run({
+    changed: files(2),
+    primary: () => model.fail('primary down'),
+    fallback: () => model.fail('fallback down'),
+  });
+  assert.equal(result.status, 'STOPPED');
+  assert.equal(primaryCalls.length, 2);
+  assert.equal(fallbackCalls.length, 2);
+  assert.equal(stateOf(gh).attempts_used, 4);
+  assert.equal(stateOf(gh).stalled_attempts, 4);
+});

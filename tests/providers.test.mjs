@@ -392,3 +392,49 @@ test('Gemini turn ending in MAX_TOKENS or SAFETY with no function calls fails im
     assert.match(outcome.error, new RegExp(finishReason));
   }
 });
+
+test('Gemini and DeepSeek enforce maxBudgetUsd across both tool loop and structured output stages', async () => {
+  const dsStageB = await runDeepSeek({
+    prompt: 'p',
+    schema: RESULT_SCHEMA,
+    toolGateway: gateway(),
+    maxBudgetUsd: 0.5,
+    env: { DEEPSEEK_API_KEY: 'k', DEEPSEEK_INPUT_PRICE_PER_MTOK: '1.0', DEEPSEEK_OUTPUT_PRICE_PER_MTOK: '2.0' },
+    fetchImpl: scriptedFetch([
+      deepseekReply({ content: 'not json yet', usage: { prompt_tokens: 100_000, completion_tokens: 50_000, total_tokens: 150_000 } }),
+      deepseekReply({ content: JSON.stringify(VALID), usage: { prompt_tokens: 400_000, completion_tokens: 100_000, total_tokens: 500_000 } }),
+    ]),
+  });
+  assert.equal(dsStageB.ok, false);
+  assert.equal(dsStageB.errorKind, 'budget');
+  assert.equal(dsStageB.meta.over_budget, true);
+
+  const gmStageA = await runGemini({
+    prompt: 'p',
+    schema: RESULT_SCHEMA,
+    toolGateway: gateway(),
+    maxBudgetUsd: 0.5,
+    env: { GEMINI_API_KEY: 'k', GEMINI_INPUT_PRICE_PER_MTOK: '1.0', GEMINI_OUTPUT_PRICE_PER_MTOK: '2.0' },
+    fetchImpl: scriptedFetch([
+      geminiReply({ parts: [{ functionCall: { name: 'Read', args: { file_path: 'src/a.js' } } }], usage: { promptTokenCount: 1_000_000, candidatesTokenCount: 100_000 } }),
+    ]),
+  });
+  assert.equal(gmStageA.ok, false);
+  assert.equal(gmStageA.errorKind, 'budget');
+  assert.equal(gmStageA.meta.over_budget, true);
+
+  const gmStageB = await runGemini({
+    prompt: 'p',
+    schema: RESULT_SCHEMA,
+    toolGateway: gateway(),
+    maxBudgetUsd: 0.5,
+    env: { GEMINI_API_KEY: 'k', GEMINI_INPUT_PRICE_PER_MTOK: '1.0', GEMINI_OUTPUT_PRICE_PER_MTOK: '2.0' },
+    fetchImpl: scriptedFetch([
+      geminiReply({ parts: [{ text: 'not json yet' }], usage: { promptTokenCount: 100_000, candidatesTokenCount: 50_000 } }),
+      geminiReply({ parts: [{ text: JSON.stringify(VALID) }], usage: { promptTokenCount: 400_000, candidatesTokenCount: 100_000 } }),
+    ]),
+  });
+  assert.equal(gmStageB.ok, false);
+  assert.equal(gmStageB.errorKind, 'budget');
+  assert.equal(gmStageB.meta.over_budget, true);
+});

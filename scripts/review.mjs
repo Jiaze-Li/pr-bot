@@ -526,7 +526,9 @@ export async function runReview({ env = process.env, github, provider, loadCtx =
     // produce (even a weak review, or one whose coverage claim cannot be credited) is never re-rolled on another model.
     if (!parsed.ok && !outcome?.ok && !batch.isFallback && provider.canFallback) {
       log(`attempt ${claimed.attempts_used} failed to execute (${String(parsed.error).slice(0, 160)}); retrying the same batch with ${provider.fallbackName}, charged as another attempt`);
-      current = claimed; // the spent attempt stays recorded; the next iteration claims the fallback's own attempt
+      current = failAttempt(claimed, now()); // the failed primary attempt also counts toward stall / consecutive-failure limits
+      consecutiveFailures += 1;
+      await store.write(current);
       pendingFallback = { ...batch, isFallback: true };
       continue;
     }
