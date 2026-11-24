@@ -272,14 +272,14 @@ test('the budget cannot be reset by rerun, new HEAD or tooling: attempts are cap
   const gh = fakeGithub({ head: sha('a') });
   const ctx = makeContext(files(3));
   let calls = 0;
-  for (let i = 0; i < 30; i += 1) {
+  for (let i = 0; i < MAX_ATTEMPTS + 2; i += 1) {
     gh.head = sha('abcdef0123456789'[i % 16]);
     const provider = scriptedProvider(() => model.fail());
     try { await review({ gh, provider, ctx }); } catch { /* a stop is fine */ }
     calls += provider.calls.length;
   }
   const s = stateOf(gh);
-  assert.ok(calls <= MAX_ATTEMPTS, `${calls} model calls`);
+  assert.equal(calls, MAX_ATTEMPTS, 'the lifetime cap is reached but never exceeded');
   assert.equal(s.attempts_used, calls);
   assert.equal(s.status, 'STOPPED');
   assert.equal(s.completed_rounds, 0);
@@ -336,8 +336,42 @@ test('historical #224: old 2/2 STOPPED with 9/14 calls resumes a true third roun
   const blocked = scriptedProvider(all);
   const after = await review({ gh, provider: blocked, ctx: makeContext(changed) });
   assert.equal(after.action, 'budget_stop');
-  assert.equal(blocked.calls.length, 0, 'a fourth round is forbidden even with two calls left');
+  assert.equal(blocked.calls.length, 0, 'a fourth round is forbidden even with unused lifetime budget');
   assert.equal(stateOf(gh).attempts_used, 12);
+});
+
+test('historical #229: capacity STOPPED at 12/14 resumes on the same HEAD and completes round 3', async () => {
+  const changed = files(37);
+  const gh = fakeGithub({ head: sha('b') });
+  const original = {
+    schema_version: 2, repo: REPO, pr_number: PR, head_sha: gh.head,
+    status: 'STOPPED',
+    reason: '37 file(s) still to review need at least 6 model executions (a batch is at most 10 files or about 70 KB of diff), but only 2 of 14 remain for this pull request. Split the pull request or review it manually.',
+    completed_rounds: 2, completed_head_sha: sha('a'), attempts_used: 12, stalled_attempts: 0,
+    scope: makeScope({ mergeBase: MERGE_BASE, files: changed }), reviewed_files: [], findings: [],
+    updated_at: '2026-11-24T03:33:27.114Z',
+  };
+  gh.comments.push({ id: '99', source: 'issue', type: 'Bot', login: BOT_LOGIN, body: renderComment(original) });
+  // 3 large inline diffs and 34 small files require six batches (3 + 3 + the remaining small files).
+  const ctx = makeContext(changed, { bigDiff: changed.slice(0, 3) });
+  const provider = scriptedProvider(all);
+  const r = await review({ gh, provider, ctx });
+  const done = stateOf(gh);
+  assert.equal(r.status, 'READY');
+  assert.equal(provider.calls.length, 6);
+  assert.equal(done.completed_rounds, 3);
+  assert.equal(done.attempts_used, 18, 'the 12 historical calls remain spent');
+  assert.equal(done.completed_head_sha, gh.head);
+  assert.equal(gh.comments.length, 1);
+  const again = scriptedProvider(all);
+  await review({ gh, provider: again, ctx });
+  assert.equal(again.calls.length, 0, 'same completed HEAD is reused');
+  gh.head = sha('c');
+  const blocked = scriptedProvider(all);
+  const after = await review({ gh, provider: blocked, ctx });
+  assert.equal(after.action, 'budget_stop');
+  assert.equal(blocked.calls.length, 0);
+  assert.equal(stateOf(gh).attempts_used, 18);
 });
 
 test('legacy #219 capacity STOPPED repairs false stall and completes round 2 with existing calls preserved', async () => {
