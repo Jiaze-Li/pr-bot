@@ -19,7 +19,9 @@ export const readCallsFor = (bytes) => Math.ceil(bytes / BATCH_LIMITS.readChunkB
 export const maxReadCalls = (maxTurns) => Math.max(1, maxTurns - BATCH_LIMITS.reservedTurns);
 
 const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 };
-const VERDICT_RANK = { OPEN: 0, FIXED: 1, UNCERTAIN: 2, STILL_OPEN: 3 }; // a blocking verdict always beats FIXED
+// Same-HEAD evidence wins over uncertainty. OPEN is newly reported failure evidence.
+// Conflicting affirmative evidence stays blocking; a new HEAD starts fresh via checked_head_sha.
+const VERDICT_RANK = { UNCERTAIN: 0, FIXED: 1, OPEN: 2, STILL_OPEN: 3 };
 const iso = (now) => new Date(now).toISOString();
 const clamp = (value, max) => String(value ?? '').slice(0, max);
 
@@ -221,7 +223,7 @@ export function applyBatch({ state, assigned, output, needsRead, reads, now }) {
       if (reported.severity === 'P3') continue; // an old or new P3 never hides or replaces anything
       const severity = existing.severity !== 'P3' && SEVERITY_RANK[existing.severity] < SEVERITY_RANK[reported.severity] ? existing.severity : reported.severity;
       const pending = existing.checked_head_sha !== head;
-      const verification = existing.verification === 'FIXED' || (pending && existing.severity !== 'P3') ? 'STILL_OPEN' : (existing.severity === 'P3' ? 'OPEN' : existing.verification);
+      const verification = existing.verification === 'FIXED' || existing.verification === 'UNCERTAIN' || (pending && existing.severity !== 'P3') ? 'STILL_OPEN' : (existing.severity === 'P3' ? 'OPEN' : existing.verification);
       findings[index] = { ...existing, severity, verification, failure_path: reported.failure_path || existing.failure_path, checked_head_sha: head };
       continue;
     }

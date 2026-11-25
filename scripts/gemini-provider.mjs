@@ -155,6 +155,7 @@ export async function runGemini({
         return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
       const candidate = payload?.candidates?.[0];
+      meta.finish_reason = typeof candidate?.finishReason === 'string' ? candidate.finishReason.slice(0, 40) : null;
       const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
       const functionCalls = parts.filter((part) => part?.functionCall);
       // Every model part (text, functionCall, thoughtSignature) must go back verbatim in later turns.
@@ -192,6 +193,8 @@ export async function runGemini({
       .map((part) => (typeof part?.text === 'string' ? part.text : '')).join('').trim();
     let usedResponseJsonSchema = false;
     const request = async (instruction) => {
+      if (instruction.startsWith('FORMAT REPAIR ONLY.')) meta.format_repair = true;
+      meta.final_effort = effort;
       turns += 1;
       if (contents[contents.length - 1]?.role === 'user') contents[contents.length - 1].parts.push({ text: instruction });
       else contents.push({ role: 'user', parts: [{ text: instruction }] });
@@ -205,6 +208,7 @@ export async function runGemini({
       const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
       if (budgetError) throw Object.assign(new Error(budgetError), { kind: 'budget' });
       const candidate = payload?.candidates?.[0];
+      meta.finish_reason = typeof candidate?.finishReason === 'string' ? candidate.finishReason.slice(0, 40) : null;
       if (candidate?.finishReason === 'MAX_TOKENS') throw Object.assign(new Error('Gemini truncated the structured result (finishReason=MAX_TOKENS)'), { kind: 'malformed' });
       if (candidate?.finishReason !== 'STOP' || candidate?.content?.parts?.some((part) => part.functionCall)) {
         throw Object.assign(new Error(`Gemini did not finish the tool-disabled final review (finishReason=${candidate?.finishReason ?? 'missing'})`), { kind: 'execution' });
@@ -214,7 +218,7 @@ export async function runGemini({
       return textOf(candidate);
     };
     const result = await finishReviewText({ initialText: textOf(lastCandidate), schema, canRequest: () => turns < Math.max(1, maxTurns), request });
-    const finalMeta = finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, used_response_json_schema: usedResponseJsonSchema, format_repair: result.repaired === true });
+    const finalMeta = finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, used_response_json_schema: usedResponseJsonSchema, format_repair: meta.format_repair || result.repaired === true });
     if (!result.ok) return failure('malformed', `Gemini structured result did not match the review schema: ${result.error}`, finalMeta);
     return { ok: true, structured: result.structured, errorKind: 'none', error: null, meta: finalMeta };
   } catch (error) {
