@@ -607,6 +607,47 @@ test('truncation recovery cannot retry twice, also repair the result, retry a re
   assert.equal(c.meta.num_turns, 3);
 });
 
+
+test('a no-tool exploration answer truncated by length uses the same single recovery allowance', async () => {
+  // Even a parseable prefix marked length is incomplete and must not be accepted as the review.
+  const cut = deepseekReply({ finish: 'length', content: JSON.stringify(VALID), reasoning: 'partial answer', usage: { prompt_tokens: 100, completion_tokens: 50 } });
+  const recovered = deepseekReply({ content: JSON.stringify(VALID), usage: { prompt_tokens: 200, completion_tokens: 100 } });
+  const f = scriptedFetch([cut, recovered]);
+  const r = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: f, maxTurns: 2 });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.meta.num_turns, 2);
+  assert.equal(r.meta.truncation_recovery, true);
+  assert.equal(r.meta.format_repair, false);
+  assert.equal(r.meta.final_effort, 'low');
+  assert.equal(r.meta.input_tokens, 300);
+  assert.equal(r.meta.output_tokens, 150);
+  assert.equal(f.calls[1].body.tool_choice, 'none');
+  assert.equal(f.calls[1].body.reasoning_effort, 'low');
+  assert.equal(f.calls[1].body.messages.at(-2).reasoning_content, 'partial answer');
+  assert.match(f.calls[1].body.messages.at(-1).content, /previous final JSON response was truncated/);
+
+  for (const next of [cut, deepseekReply({ content: JSON.stringify(OVERLONG) })]) {
+    const again = scriptedFetch([cut, next, recovered]);
+    const failed = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: again, maxTurns: 14 });
+    assert.equal(failed.ok, false);
+    assert.equal(failed.errorKind, 'malformed');
+    assert.equal(again.calls.length, 2, 'no second recovery or extra format repair even with spare turns');
+    assert.equal(failed.meta.truncation_recovery, true);
+    assert.equal(failed.meta.format_repair, false);
+  }
+});
+
+test('direct valid exploration answers report their actual reasoning effort without another request', async () => {
+  for (const effort of ['high', 'max', 'none']) {
+    const f = scriptedFetch([deepseekReply({ content: JSON.stringify(VALID) })]);
+    const r = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: f, effort });
+    assert.equal(r.ok, true, r.error);
+    assert.equal(f.calls.length, 1);
+    assert.equal(r.meta.final_effort, effort);
+    assert.equal(r.meta.truncation_recovery, false);
+  }
+});
+
 // ---------------------------------------------------------------- shared validation
 
 test('the shared validator enforces the review schema the Claude SDK would have enforced', () => {

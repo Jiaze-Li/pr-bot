@@ -143,6 +143,8 @@ export async function runDeepSeek({
   let toolCalls = 0;
   let resolvedModel = model;
   let lastContent = '';
+  let explorationTruncated = false;
+  const recoveryInstruction = 'The previous final JSON response was truncated and not accepted. Complete the same review now as one concise valid JSON object. Preserve supported findings, prior verdicts and honest coverage from the existing analysis; do not start a new review or use tools. Use only schema fields. JSON only.';
   const finalEffort = effort === 'none' ? undefined : 'low';
   const rememberFinish = (choice) => { meta.finish_reason = typeof choice?.finish_reason === 'string' ? choice.finish_reason.slice(0, 40) : null; };
   meta.format_repair = false;
@@ -176,11 +178,18 @@ export async function runDeepSeek({
         ...(calls.length ? { tool_calls: calls } : {}),
       });
       if (!calls.length) {
-        lastContent = typeof message.content === 'string' ? message.content : '';
-        if (['length', 'content_filter', 'insufficient_system_resource', 'aborted'].includes(choice.finish_reason)) {
-          return failure(choice.finish_reason === 'length' ? 'malformed' : 'execution',
+        // A no-tool reply can be the final answer even during exploration. A length stop is incomplete,
+        // never a directly accepted JSON result, and consumes the same single recovery allowance.
+        meta.final_effort = effort;
+        if (choice.finish_reason === 'length') {
+          explorationTruncated = true;
+          break;
+        }
+        if (['content_filter', 'insufficient_system_resource', 'aborted'].includes(choice.finish_reason)) {
+          return failure('execution',
             `DeepSeek stopped with finish_reason=${choice.finish_reason}`, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
         }
+        lastContent = typeof message.content === 'string' ? message.content : '';
         break;
       }
       if (toolCalls + calls.length > maxTurns * 4) {
@@ -214,6 +223,12 @@ export async function runDeepSeek({
     const request = async (instruction) => {
       const repairing = instruction.startsWith('FORMAT REPAIR ONLY.');
       if (repairing) meta.format_repair = true;
+      if (explorationTruncated) {
+        // The incomplete assistant message is already in messages. Use the normal tool-disabled request,
+        // but do not allow a second recovery or a subsequent format repair.
+        meta.truncation_recovery = true;
+        instruction = recoveryInstruction;
+      }
       meta.final_effort = finalEffort ?? 'none';
       for (;;) {
         turns += 1;
@@ -241,7 +256,7 @@ export async function runDeepSeek({
             role: 'assistant', content: message.content ?? '',
             ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
           });
-          instruction = 'The previous final JSON response was truncated and not accepted. Complete the same review now as one concise valid JSON object. Preserve supported findings, prior verdicts and honest coverage from the existing analysis; do not start a new review or use tools. Use only schema fields. JSON only.';
+          instruction = recoveryInstruction;
           continue;
         }
         if (choice?.finish_reason !== 'stop') {
