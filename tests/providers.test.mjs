@@ -392,7 +392,8 @@ test('schema instructions are generated from the real schema', () => {
   assert.match(schemaInstruction(RESULT_SCHEMA), /"prior_findings"/);
   const gemini = toGeminiJsonSchema(RESULT_SCHEMA);
   assert.equal(gemini.properties.summary.minLength, undefined);
-  assert.equal(gemini.properties.findings.maxItems, 20);
+  assert.equal(gemini.properties.findings.maxItems, undefined);
+  assert.equal(gemini.properties.coverage.properties.reviewedPaths.maxItems, undefined);
   assert.equal(gemini.properties.coverage.properties.reviewedPaths.items.type, 'string');
 });
 
