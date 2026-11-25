@@ -81,11 +81,11 @@ export function baseMeta({ provider, model, effort, maxTurns, startedAt, maxBudg
 
 // A nominal USD estimate from configured per-million-token prices. Without prices the cost is unknown, never zero:
 // "not free", just not reported.
-export function estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice = null }) {
+export function estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice = null, outputIncludesThoughts = false }) {
   if (!(Number.isFinite(inputPrice) && inputPrice >= 0) || !(Number.isFinite(outputPrice) && outputPrice >= 0)) return null;
   const input = num(usage?.input_tokens) ?? 0;
   const cached = num(usage?.cache_read_input_tokens) ?? 0;
-  const output = (num(usage?.output_tokens) ?? 0) + (num(usage?.thoughts_tokens) ?? 0);
+  const output = (num(usage?.output_tokens) ?? 0) + (outputIncludesThoughts ? 0 : (num(usage?.thoughts_tokens) ?? 0));
   const cachedPrice = Number.isFinite(cachedInputPrice) ? cachedInputPrice : inputPrice;
   const billedInput = Math.max(0, input - cached);
   return (billedInput * inputPrice + cached * cachedPrice + output * outputPrice) / 1_000_000;
@@ -98,9 +98,9 @@ export function priceFromEnv(env, key) {
   return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-export function checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice = null }) {
+export function checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice = null, outputIncludesThoughts = false }) {
   if (meta.usd_cap === null || inputPrice === null || outputPrice === null) return null;
-  const spent = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice });
+  const spent = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice, outputIncludesThoughts });
   if (spent !== null && spent > meta.usd_cap) {
     return `${meta.provider} nominal cost ${spent.toFixed(4)} exceeded the per-execution cap ${meta.usd_cap}`;
   }
