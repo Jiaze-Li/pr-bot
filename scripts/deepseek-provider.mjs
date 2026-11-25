@@ -3,7 +3,8 @@
 //
 // Everything a model may touch still goes through the host tool gateway: the declarations below are only the names,
 // descriptions and JSON Schemas of `Read`/`Glob`/`Grep`. No GitHub credential is passed to this module, and no
-// request is retried inside it: one call here is one attempt in the PR's budget, charged by the caller.
+// HTTP request is retried inside it: one execution is one attempt in the PR's budget, charged by the caller.
+// One reserved turn can recover an incomplete final output or repair overlong descriptive fields.
 import {
   baseMeta, checkBudgetCap, estimateCostUsd, explorationTurnLimit, failure, finishReviewText, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, reviewLengthInstruction, statusClass,
 } from './provider-common.mjs';
@@ -142,6 +143,12 @@ export async function runDeepSeek({
   let toolCalls = 0;
   let resolvedModel = model;
   let lastContent = '';
+  let explorationTruncated = false;
+  const recoveryInstruction = 'The previous final JSON response was truncated and not accepted. Complete the same review now as one concise valid JSON object. Preserve supported findings, prior verdicts and honest coverage from the existing analysis; do not start a new review or use tools. Use only schema fields. JSON only.';
+  const finalEffort = effort === 'none' ? undefined : 'low';
+  const rememberFinish = (choice) => { meta.finish_reason = typeof choice?.finish_reason === 'string' ? choice.finish_reason.slice(0, 40) : null; };
+  meta.format_repair = false;
+  meta.truncation_recovery = false;
 
   try {
     // Stage A: tool exploration. With `tools` present, `reasoning_content` must be echoed back in every later
@@ -160,6 +167,7 @@ export async function runDeepSeek({
         return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
       const choice = payload?.choices?.[0];
+      rememberFinish(choice);
       const message = choice?.message;
       if (!message) return failure('execution', 'DeepSeek returned no message', finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       const calls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
@@ -170,11 +178,18 @@ export async function runDeepSeek({
         ...(calls.length ? { tool_calls: calls } : {}),
       });
       if (!calls.length) {
-        lastContent = typeof message.content === 'string' ? message.content : '';
-        if (['length', 'content_filter', 'insufficient_system_resource', 'aborted'].includes(choice.finish_reason)) {
-          return failure(choice.finish_reason === 'length' ? 'malformed' : 'execution',
+        // A no-tool reply can be the final answer even during exploration. A length stop is incomplete,
+        // never a directly accepted JSON result, and consumes the same single recovery allowance.
+        meta.final_effort = effort;
+        if (choice.finish_reason === 'length') {
+          explorationTruncated = true;
+          break;
+        }
+        if (['content_filter', 'insufficient_system_resource', 'aborted'].includes(choice.finish_reason)) {
+          return failure('execution',
             `DeepSeek stopped with finish_reason=${choice.finish_reason}`, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
         }
+        lastContent = typeof message.content === 'string' ? message.content : '';
         break;
       }
       if (toolCalls + calls.length > maxTurns * 4) {
@@ -202,33 +217,61 @@ export async function runDeepSeek({
         });
       }
     }
-    // Stage B: final answer and optional length-only repair share the same bounded, tool-disabled request.
+    // Stage B: lower reasoning effort; keep prior reasoning and tools (disabled with tool_choice).
+    // A truncated final answer is not a verdict. One reserved turn may complete it; never retry an accepted
+    // answer, an HTTP/safety failure, a tool request or an already attempted format repair.
     const request = async (instruction) => {
-      turns += 1;
-      const payload = await call({
-        model, messages: [...messages, { role: 'user', content: instruction }],
-        ...(tools.length ? { tools, tool_choice: 'none' } : {}),
-        thinking, reasoning_effort: effort === 'none' ? undefined : effort,
-        response_format: { type: 'json_object' }, max_tokens: maxOutputTokens,
-      });
-      if (typeof payload?.model === 'string' && payload.model) resolvedModel = payload.model;
-      addUsage(payload?.usage);
-      const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice, outputIncludesThoughts: true });
-      if (budgetError) throw Object.assign(new Error(budgetError), { kind: 'budget' });
-      const choice = payload?.choices?.[0];
-      if (choice?.finish_reason === 'length') throw Object.assign(new Error('DeepSeek truncated the structured result (finish_reason=length)'), { kind: 'malformed' });
-      if (choice?.finish_reason !== 'stop' || choice?.message?.tool_calls?.length) {
-        throw Object.assign(new Error(`DeepSeek did not finish the tool-disabled final review (finish_reason=${choice?.finish_reason ?? 'missing'})`), { kind: 'execution' });
+      const repairing = instruction.startsWith('FORMAT REPAIR ONLY.');
+      if (repairing) meta.format_repair = true;
+      if (explorationTruncated) {
+        // The incomplete assistant message is already in messages. Use the normal tool-disabled request,
+        // but do not allow a second recovery or a subsequent format repair.
+        meta.truncation_recovery = true;
+        instruction = recoveryInstruction;
       }
-      const message = choice.message ?? {};
-      messages.push({ role: 'user', content: instruction }, {
-        role: 'assistant', content: message.content ?? '',
-        ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
-      });
-      return typeof message.content === 'string' ? message.content : '';
+      meta.final_effort = finalEffort ?? 'none';
+      for (;;) {
+        turns += 1;
+        const payload = await call({
+          model, messages: [...messages, { role: 'user', content: instruction }],
+          ...(tools.length ? { tools, tool_choice: 'none' } : {}),
+          thinking, reasoning_effort: finalEffort,
+          response_format: { type: 'json_object' }, max_tokens: maxOutputTokens,
+        });
+        if (typeof payload?.model === 'string' && payload.model) resolvedModel = payload.model;
+        addUsage(payload?.usage);
+        const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice, outputIncludesThoughts: true });
+        if (budgetError) throw Object.assign(new Error(budgetError), { kind: 'budget' });
+        const choice = payload?.choices?.[0];
+        rememberFinish(choice);
+        if (choice?.message?.tool_calls?.length) throw Object.assign(new Error('DeepSeek requested a tool during the tool-disabled final review'), { kind: 'execution' });
+        if (choice?.finish_reason === 'length') {
+          if (repairing || meta.truncation_recovery || turns >= Math.max(1, maxTurns)) {
+            throw Object.assign(new Error('DeepSeek truncated the structured result (finish_reason=length)'), { kind: 'malformed' });
+          }
+          meta.truncation_recovery = true;
+          // Preserve completed analysis and the incomplete response verbatim.
+          const message = choice.message ?? {};
+          messages.push({ role: 'user', content: instruction }, {
+            role: 'assistant', content: message.content ?? '',
+            ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
+          });
+          instruction = recoveryInstruction;
+          continue;
+        }
+        if (choice?.finish_reason !== 'stop') {
+          throw Object.assign(new Error(`DeepSeek did not finish the tool-disabled final review (finish_reason=${choice?.finish_reason ?? 'missing'})`), { kind: 'execution' });
+        }
+        const message = choice.message ?? {};
+        messages.push({ role: 'user', content: instruction }, {
+          role: 'assistant', content: message.content ?? '',
+          ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
+        });
+        return typeof message.content === 'string' ? message.content : '';
+      }
     };
-    const result = await finishReviewText({ initialText: lastContent, schema, canRequest: () => turns < Math.max(1, maxTurns), request });
-    const finalMeta = finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, format_repair: result.repaired === true });
+    const result = await finishReviewText({ initialText: lastContent, schema, canRequest: () => !meta.truncation_recovery && turns < Math.max(1, maxTurns), request });
+    const finalMeta = finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, format_repair: meta.format_repair || result.repaired === true });
     if (!result.ok) return failure('malformed', `DeepSeek structured result did not match the review schema: ${result.error}`, finalMeta);
     return { ok: true, structured: result.structured, errorKind: 'none', error: null, meta: finalMeta };
   } catch (error) {

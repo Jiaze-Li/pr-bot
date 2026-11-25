@@ -70,7 +70,7 @@ test('an execution failure switches to the fallback with the SAME prompt, and bo
 test('the diagnostics record which provider and model actually ran, and mark the fallback execution', async () => {
   const { logs } = await run({
     primary: (call) => ({ ...model.fail('boom'), meta: { provider: 'deepseek', requested_model: 'deepseek-flash', input_tokens: 10, output_tokens: 2 } }),
-    fallback: (call) => ({ ...model.ok({ assigned: call.assigned }), meta: { provider: 'gemini', resolved_model: 'gemini-flash-latest', input_tokens: 20, output_tokens: 3, cost_source: 'configured-prices', cost_usd_nominal: 0.01 } }),
+    fallback: (call) => ({ ...model.ok({ assigned: call.assigned, findings: [P2] }), meta: { provider: 'gemini', resolved_model: 'gemini-flash-latest', input_tokens: 20, output_tokens: 3, cost_source: 'configured-prices', cost_usd_nominal: 0.01, final_effort: 'medium', finish_reason: 'STOP', format_repair: false } }),
   });
   const rows = diagnostics(logs);
   assert.equal(rows.length, 2);
@@ -80,6 +80,32 @@ test('the diagnostics record which provider and model actually ran, and mark the
   assert.equal(rows[1].input_tokens, 20);
   assert.equal(rows[1].cost_usd_nominal, 0.01);
   assert.match(rows[1].cost_note, /configured per-Mtok prices/);
+  assert.equal(rows[0].result_accepted, false);
+  assert.deepEqual(rows[0].new_finding_ids, []);
+  assert.equal(rows[1].result_accepted, true);
+  assert.deepEqual(rows[1].new_finding_ids, ['F001']);
+  assert.equal(rows[1].credited_files, 1);
+  assert.equal(rows[1].final_effort, 'medium');
+  assert.equal(rows[1].finish_reason, 'STOP');
+  assert.equal(rows[1].format_repair, false);
+});
+
+test('diagnostics attribute prior verdict changes without logging evidence text', async () => {
+  const changed = files(11);
+  const seed = {
+    schema_version: 2, repo: REPO, pr_number: PR, head_sha: sha('a'), status: 'STOPPED',
+    reason: 'Interrupted earlier; request a review again to continue.', completed_rounds: 0, completed_head_sha: null,
+    attempts_used: 1, stalled_attempts: 0, scope: makeScope({ mergeBase: MERGE_BASE, files: changed }),
+    reviewed_files: [], findings: [{ ...P2, id: 'F001', verification: 'UNCERTAIN', checked_head_sha: sha('a') }], updated_at: '2026-11-24T00:00:00.000Z',
+  };
+  const { logs, result } = await run({
+    changed, seed,
+    primary: (call, n) => model.ok({ assigned: call.assigned, prior: n === 1 ? [{ id: 'F001', verification: 'FIXED', evidence: 'PRIVATE_TEST_EVIDENCE' }] : [] }),
+  });
+  assert.equal(result.status, 'READY');
+  const rows = diagnostics(logs);
+  assert.deepEqual(rows[0].verdict_changes, [{ id: 'F001', from: 'UNCERTAIN', to: 'FIXED', severity_from: 'P2', severity_to: 'P2' }]);
+  assert.ok(!JSON.stringify(rows).includes('PRIVATE_TEST_EVIDENCE'));
 });
 
 test('a produced review is never re-rolled: findings, an empty result or an uncredited coverage claim stay on the primary', async () => {

@@ -205,6 +205,84 @@ test('round 2 with FIXED + evidence reaches READY; FIXED without evidence does n
   }
 });
 
+
+test('#234 F009: uncertain early verdict remains in the later batch and can be corrected on the same HEAD', async () => {
+  const gh = fakeGithub({ head: sha('a') });
+  const doc = 'docs/brief.md';
+  const ctx = makeContext([...files(10), doc]);
+  const finding = { ...P2, path: doc, title: 'Conflicting task authorization', failure_path: 'The old contract prohibits the implementation requested by 5C.' };
+  await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: c.n === 1 ? [finding] : [] })), ctx });
+  assert.equal(stateOf(gh).status, 'CHANGES_REQUESTED');
+  gh.head = sha('b');
+  const provider = scriptedProvider((c) => {
+    assert.match(c.prompt, /F001.*old contract/);
+    return model.ok({ assigned: c.assigned, prior: [{ id: 'F001', verification: c.n === 1 ? 'UNCERTAIN' : 'FIXED', evidence: c.n === 1 ? '' : 'docs/brief.md:3 now explicitly authorizes code.' }] });
+  });
+  await review({ gh, provider, ctx });
+  assert.equal(provider.calls.length, 2);
+  assert.equal(stateOf(gh).status, 'READY');
+  assert.equal(stateOf(gh).findings[0].verification, 'FIXED');
+});
+
+test('same-HEAD definitive evidence wins over uncertainty, but positive failure evidence cannot be erased', async () => {
+  for (const [first, second, expected] of [
+    ['FIXED', 'UNCERTAIN', 'FIXED'],
+    ['UNCERTAIN', 'FIXED', 'FIXED'],
+    ['UNCERTAIN', 'STILL_OPEN', 'STILL_OPEN'],
+    ['STILL_OPEN', 'UNCERTAIN', 'STILL_OPEN'],
+    ['FIXED', 'STILL_OPEN', 'STILL_OPEN'],
+    ['STILL_OPEN', 'FIXED', 'STILL_OPEN'],
+  ]) {
+    const gh = fakeGithub({ head: sha('a') });
+    const ctx = makeContext(files(11));
+    await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: c.n === 1 ? [P2] : [] })), ctx });
+    gh.head = sha('b');
+    const provider = scriptedProvider((c) => model.ok({ assigned: c.assigned, prior: [{ id: 'F001', verification: c.n === 1 ? first : second, evidence: 'Current concrete code evidence.' }] }));
+    await review({ gh, provider, ctx });
+    assert.equal(stateOf(gh).findings[0].verification, expected, `${first} then ${second}`);
+    assert.equal(stateOf(gh).status, expected === 'FIXED' ? 'READY' : 'CHANGES_REQUESTED');
+  }
+  const gh = fakeGithub();
+  const ctx = makeContext(files(11));
+  await review({ gh, ctx, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: c.n === 1 ? [P2] : [], prior: c.n === 2 ? [{ id: 'F001', verification: 'FIXED', evidence: 'contradictory same-HEAD claim' }] : [] })) });
+  assert.equal(stateOf(gh).status, 'CHANGES_REQUESTED', 'new positive failure cannot be cleared on unchanged HEAD');
+});
+
+
+test('a bare STILL_OPEN claim cannot override FIXED evidence or manufacture a definitive verdict', async () => {
+  for (const [first, second, expected] of [
+    [{ verification: 'FIXED', evidence: 'The current early return prevents persistence.' }, { verification: 'STILL_OPEN', evidence: '' }, 'FIXED'],
+    [{ verification: 'STILL_OPEN', evidence: '' }, { verification: 'FIXED', evidence: 'The current early return prevents persistence.' }, 'FIXED'],
+    [{ verification: 'STILL_OPEN', evidence: ' ' }, { verification: 'UNCERTAIN', evidence: '' }, 'UNCERTAIN'],
+  ]) {
+    const gh = fakeGithub({ head: sha('a') });
+    const ctx = makeContext(files(11));
+    await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: c.n === 1 ? [P2] : [] })), ctx });
+    gh.head = sha('b');
+    await review({ gh, ctx, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, prior: [{ id: 'F001', ...(c.n === 1 ? first : second) }] })) });
+    assert.equal(stateOf(gh).findings[0].verification, expected);
+    assert.equal(stateOf(gh).status, expected === 'FIXED' ? 'READY' : 'CHANGES_REQUESTED');
+  }
+});
+
+test('later batches see earlier finding identities including P3; the shared prompt demands current evidence', async () => {
+  const gh = fakeGithub();
+  const ctx = makeContext(files(11));
+  const suggestion = { ...P2, severity: 'P3', title: 'One useful suggestion' };
+  const provider = scriptedProvider((c) => {
+    if (c.n === 2) {
+      assert.match(c.prompt, /F001 \[P3\/OPEN\].*One useful suggestion/);
+      assert.match(c.prompt, /exactly its existing path and title/);
+      assert.match(c.prompt, /verify that the alleged caller actually calls that code/);
+      assert.match(c.prompt, /Do not demand a redundant mechanism/);
+    }
+    return model.ok({ assigned: c.assigned, findings: c.n === 1 ? [suggestion] : [] });
+  });
+  await review({ gh, provider, ctx });
+  assert.equal(stateOf(gh).status, 'READY');
+  assert.equal(stateOf(gh).findings.length, 1);
+});
+
 test('a repeated report of an old FIXED or P3 issue is not hidden by the old verdict', async () => {
   const gh = fakeGithub({ head: sha('a') });
   const ctx = makeContext(files(2));
