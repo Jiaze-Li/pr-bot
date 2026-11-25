@@ -76,3 +76,47 @@ test('live Gemini: tool calling + structured output against the real API', async
     `the model must have used the Read tool; summary was ${JSON.stringify(outcome.structured.summary).slice(0, 120)}`);
   assert.match(outcome.structured.summary, new RegExp(NONCE), 'the summary proves the file content was really read');
 });
+
+
+// Deterministically inject one deliberately overlong model reply; the repair itself uses the real API.
+// This exercises the exact production recovery path without depending on a model accidentally violating the schema.
+const SENTENCE = 'When CACHE_MISS is true, the handler skips persisting the record, so RECORD_LOST occurs.';
+const overlong = {
+  summary: 'One illustrative finding.',
+  findings: [{ severity: 'P2', title: 'Missing persistence', path: 'src/answer.txt', failure_path: (SENTENCE + ' ').repeat(10) }],
+  prior_findings: [],
+  coverage: { complete: true, reviewedPaths: ['src/answer.txt'], unreviewedPaths: [], note: '' },
+};
+for (const [name, credential, keys, run, synthetic] of [
+  ['DeepSeek', 'DEEPSEEK_API_KEY', ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_REASONING_EFFORT'], runDeepSeek,
+    { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(overlong), reasoning_content: 'Synthetic format-repair test input.' } }] }],
+  ['Gemini', 'GEMINI_API_KEY', ['GEMINI_API_KEY', 'GEMINI_API_BASE_URL', 'GEMINI_MODEL', 'GEMINI_THINKING_LEVEL'], runGemini,
+    { candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ text: JSON.stringify(overlong) }] } }] }],
+]) {
+  test(`live ${name}: repair an injected overlong result using the real API`, async (t) => {
+    if (!enabled) return t.skip('RUN_LIVE_PROVIDER_TESTS is not 1');
+    if (!process.env[credential]) return t.skip(`${credential} is not set`);
+    const { gw } = sandbox();
+    let requests = 0;
+    const outcome = await run({
+      prompt: 'A synthetic review result follows. Preserve its findings and coverage. If asked to shorten its evidence, keep the exact trigger CACHE_MISS and consequence RECORD_LOST.',
+      schema: RESULT_SCHEMA, toolGateway: gw, env: liveEnv(keys), maxTurns: 3, timeoutMs: 120_000,
+      fetchImpl: async (url, init) => ++requests === 1
+        ? new Response(JSON.stringify(synthetic), { status: 200 })
+        : fetch(url, init),
+    });
+    assert.equal(outcome.ok, true, outcome.error);
+    assert.equal(outcome.meta.format_repair, true);
+    assert.equal(outcome.meta.num_turns, 2);
+    assert.equal(requests, 2);
+    assert.equal(outcome.meta.tool_calls, 0);
+    assert.ok(outcome.meta.output_tokens > 0, 'real repair returned token usage');
+    assert.equal(validateResult(outcome.structured, RESULT_SCHEMA).ok, true);
+    assert.equal(outcome.structured.findings.length, 1);
+    assert.equal(outcome.structured.findings[0].severity, 'P2');
+    assert.equal(outcome.structured.findings[0].path, 'src/answer.txt');
+    assert.deepEqual(outcome.structured.coverage, overlong.coverage);
+    assert.match(outcome.structured.findings[0].failure_path, /CACHE_MISS/);
+    assert.match(outcome.structured.findings[0].failure_path, /RECORD_LOST/);
+  });
+}

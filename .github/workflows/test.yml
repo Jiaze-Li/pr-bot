@@ -16,9 +16,10 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '22'
+          package-manager-cache: false
       # MCP Handler tests import the real SDK and zod. Install pinned
       # dependencies; no Claude credentials or paid model calls are used.
       - run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
