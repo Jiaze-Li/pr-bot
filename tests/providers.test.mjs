@@ -296,7 +296,9 @@ test('Gemini: functionCall turns are executed through the gateway and the model 
   assert.equal(first.url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent');
   assert.equal(first.headers['x-goog-api-key'], 'g-key');
   assert.equal(first.body.tools[0].functionDeclarations.length, 3);
-  assert.equal(first.body.tools[0].functionDeclarations.find((d) => d.name === 'Read').parameters.properties.file_path.minLength, undefined, 'unsupported JSON Schema keys are stripped');
+  const readDecl = first.body.tools[0].functionDeclarations.find((d) => d.name === 'Read');
+  assert.equal(readDecl.parameters, undefined, 'parameters and parametersJsonSchema are mutually exclusive');
+  assert.equal(readDecl.parametersJsonSchema.properties.file_path.minLength, undefined, 'unsupported JSON Schema keys are stripped');
   assert.equal(first.body.generationConfig.thinkingConfig.thinkingLevel, 'medium');
   assert.equal(first.body.contents[0].parts[0].text, 'review this');
 
@@ -324,8 +326,10 @@ test('Gemini: a non-JSON answer is followed by one schema-constrained request wi
   const final = fetchImpl.calls[1].body;
   assert.equal(final.tools, undefined);
   assert.equal(final.generationConfig.responseMimeType, 'application/json');
-  assert.equal(final.generationConfig.responseSchema.required.includes('coverage'), true);
-  assert.equal(final.generationConfig.responseSchema.properties.coverage.properties.complete.type, 'boolean');
+  assert.equal(final.generationConfig.responseSchema, undefined, 'use responseJsonSchema rather than OpenAPI responseSchema');
+  assert.equal(final.generationConfig.responseJsonSchema.additionalProperties, false);
+  assert.equal(final.generationConfig.responseJsonSchema.required.includes('coverage'), true);
+  assert.equal(final.generationConfig.responseJsonSchema.properties.coverage.properties.complete.type, 'boolean');
 });
 
 test('Gemini: schema-invalid, empty and truncated structured results are malformed failures', async () => {
