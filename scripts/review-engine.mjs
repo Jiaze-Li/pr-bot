@@ -156,8 +156,8 @@ export function parseBatchOutput(raw) {
   const verdicts = new Map();
   for (const p of raw.prior_findings) {
     if (!p || typeof p.id !== 'string' || !['FIXED', 'STILL_OPEN', 'UNCERTAIN'].includes(p.verification)) return { ok: false, error: 'model output contains a malformed prior finding verdict' };
-    // FIXED has to come with evidence; otherwise it is only a claim.
-    const verification = p.verification === 'FIXED' && !String(p.evidence ?? '').trim() ? 'UNCERTAIN' : p.verification;
+    // A definitive verdict needs evidence; a bare claim is only uncertainty, not contrary evidence.
+    const verification = p.verification !== 'UNCERTAIN' && !String(p.evidence ?? '').trim() ? 'UNCERTAIN' : p.verification;
     const old = verdicts.get(p.id);
     if (!old || VERDICT_RANK[verification] > VERDICT_RANK[old]) verdicts.set(p.id, verification);
   }

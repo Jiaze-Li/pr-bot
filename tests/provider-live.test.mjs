@@ -132,7 +132,7 @@ test('live DeepSeek: recognize a fixed control-flow bug, retain a true ownership
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'review-cases-')));
   try {
     const sources = {
-      "reminder.js": "export function notify(s, current) {\n  if (s.fingerprint !== current) {\n    if (s.windowOpen) { s.pending = true; return; }\n    s.alert = true;\n  }\n  s.fingerprint = current;\n}\nexport function close(s, current) {\n  s.windowOpen = false;\n  if (s.pending) { s.pending = false; notify(s, current); }\n}",
+      "reminder.js": "export function notify(s, current) {\n  if (s.fingerprint !== current) {\n    if (s.windowOpen) { s.pending = true; return; }\n    else { s.alert = true; }\n  }\n  s.fingerprint = current;\n}\nexport function close(s, current) {\n  s.windowOpen = false;\n  if (s.pending) { s.pending = false; notify(s, current); }\n}",
       "ingest.js": "export function ingest(committed, operationID, confirmedSampleUID) {\n  if (committed.has(operationID)) return committed.get(operationID);\n  const result = { sampleUID: confirmedSampleUID };\n  committed.set(operationID, result);\n  return result;\n}",
       "ownership.sql": "CREATE TABLE sample_asset_links (asset_id TEXT PRIMARY KEY NOT NULL, sample_uid TEXT NOT NULL);",
       "ownership.test.js": "import { DatabaseSync } from 'node:sqlite';\nimport assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nconst db = new DatabaseSync(':memory:');\ndb.exec(readFileSync(new URL('./ownership.sql', import.meta.url), 'utf8'));\ndb.exec(\"INSERT INTO sample_asset_links VALUES ('source-a', 'sample-a')\");\nassert.throws(() => db.exec(\"INSERT INTO sample_asset_links VALUES ('source-a', 'sample-b')\"), /UNIQUE constraint failed/);\ndb.close();"

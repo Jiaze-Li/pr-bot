@@ -248,6 +248,23 @@ test('same-HEAD definitive evidence wins over uncertainty, but positive failure 
   assert.equal(stateOf(gh).status, 'CHANGES_REQUESTED', 'new positive failure cannot be cleared on unchanged HEAD');
 });
 
+
+test('a bare STILL_OPEN claim cannot override FIXED evidence or manufacture a definitive verdict', async () => {
+  for (const [first, second, expected] of [
+    [{ verification: 'FIXED', evidence: 'The current early return prevents persistence.' }, { verification: 'STILL_OPEN', evidence: '' }, 'FIXED'],
+    [{ verification: 'STILL_OPEN', evidence: '' }, { verification: 'FIXED', evidence: 'The current early return prevents persistence.' }, 'FIXED'],
+    [{ verification: 'STILL_OPEN', evidence: ' ' }, { verification: 'UNCERTAIN', evidence: '' }, 'UNCERTAIN'],
+  ]) {
+    const gh = fakeGithub({ head: sha('a') });
+    const ctx = makeContext(files(11));
+    await review({ gh, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: c.n === 1 ? [P2] : [] })), ctx });
+    gh.head = sha('b');
+    await review({ gh, ctx, provider: scriptedProvider((c) => model.ok({ assigned: c.assigned, prior: [{ id: 'F001', ...(c.n === 1 ? first : second) }] })) });
+    assert.equal(stateOf(gh).findings[0].verification, expected);
+    assert.equal(stateOf(gh).status, expected === 'FIXED' ? 'READY' : 'CHANGES_REQUESTED');
+  }
+});
+
 test('later batches see earlier finding identities including P3; the shared prompt demands current evidence', async () => {
   const gh = fakeGithub();
   const ctx = makeContext(files(11));

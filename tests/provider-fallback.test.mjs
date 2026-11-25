@@ -90,6 +90,24 @@ test('the diagnostics record which provider and model actually ran, and mark the
   assert.equal(rows[1].format_repair, false);
 });
 
+test('diagnostics attribute prior verdict changes without logging evidence text', async () => {
+  const changed = files(11);
+  const seed = {
+    schema_version: 2, repo: REPO, pr_number: PR, head_sha: sha('a'), status: 'STOPPED',
+    reason: 'Interrupted earlier; request a review again to continue.', completed_rounds: 0, completed_head_sha: null,
+    attempts_used: 1, stalled_attempts: 0, scope: makeScope({ mergeBase: MERGE_BASE, files: changed }),
+    reviewed_files: [], findings: [{ ...P2, id: 'F001', verification: 'UNCERTAIN', checked_head_sha: sha('a') }], updated_at: '2026-11-24T00:00:00.000Z',
+  };
+  const { logs, result } = await run({
+    changed, seed,
+    primary: (call, n) => model.ok({ assigned: call.assigned, prior: n === 1 ? [{ id: 'F001', verification: 'FIXED', evidence: 'PRIVATE_TEST_EVIDENCE' }] : [] }),
+  });
+  assert.equal(result.status, 'READY');
+  const rows = diagnostics(logs);
+  assert.deepEqual(rows[0].verdict_changes, [{ id: 'F001', from: 'UNCERTAIN', to: 'FIXED', severity_from: 'P2', severity_to: 'P2' }]);
+  assert.ok(!JSON.stringify(rows).includes('PRIVATE_TEST_EVIDENCE'));
+});
+
 test('a produced review is never re-rolled: findings, an empty result or an uncredited coverage claim stay on the primary', async () => {
   const withFinding = await run({ primary: (call) => model.ok({ assigned: call.assigned, findings: [P2] }), fallback: (call) => model.ok({ assigned: call.assigned }) });
   assert.equal(withFinding.result.status, 'CHANGES_REQUESTED');
