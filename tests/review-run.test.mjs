@@ -283,6 +283,33 @@ test('later batches see earlier finding identities including P3; the shared prom
   assert.equal(stateOf(gh).findings.length, 1);
 });
 
+
+test('review objective is delivery, with a marginal-benefit threshold for suggestions only', async () => {
+  const gh = fakeGithub({ head: sha('a') });
+  const ctx = makeContext(files(2));
+  const suggestion = { ...P2, severity: 'P3', title: 'Optional refinement' };
+  const first = scriptedProvider((c) => model.ok({ assigned: c.assigned, findings: [suggestion] }));
+  await review({ gh, provider: first, ctx });
+  assert.equal(stateOf(gh).status, 'READY', 'P3 alone is not a blocker');
+  assert.match(first.calls[0].prompt, /meets its delivery requirements/);
+  assert.match(first.calls[0].prompt, /no findings is a successful outcome/);
+  assert.match(first.calls[0].prompt, /Report a P3 only when it has a concrete consequence/);
+  assert.match(first.calls[0].prompt, /developer time, regression risk and possible extra review cycle/);
+  assert.match(first.calls[0].prompt, /Never use marginal benefit, repair cost or the desire to finish as a reason to suppress a supported P0-P2/);
+  gh.head = sha('b');
+  const second = scriptedProvider((c) => {
+    assert.match(c.prompt, /Verify earlier blocking findings first/);
+    assert.match(c.prompt, /do not spend review effort re-verifying old P3/);
+    assert.match(c.prompt, /Still examine every assigned diff and report any independently supported P0-P2/);
+    assert.match(c.prompt, /If coverage is incomplete, say so honestly/);
+    return model.ok({ assigned: c.assigned, findings: [P2] });
+  });
+  await review({ gh, provider: second, ctx });
+  assert.equal(stateOf(gh).status, 'CHANGES_REQUESTED', 'a genuinely new blocker still blocks in a later round');
+  assert.equal(stateOf(gh).completed_rounds, 2);
+  assert.equal(stateOf(gh).findings.filter(isBlocking).length, 1);
+});
+
 test('a repeated report of an old FIXED or P3 issue is not hidden by the old verdict', async () => {
   const gh = fakeGithub({ head: sha('a') });
   const ctx = makeContext(files(2));
