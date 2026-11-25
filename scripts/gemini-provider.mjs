@@ -4,7 +4,7 @@
 // Used only when the primary provider fails to execute. Nothing here decides whether a review is good enough; that
 // is the executor's job. One call here is one attempt in the PR's budget, charged by the caller.
 import {
-  FINAL_REVIEW_INSTRUCTION, baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
+  baseMeta, checkBudgetCap, estimateCostUsd, explorationTurnLimit, failure, finishReviewText, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, reviewLengthInstruction, statusClass,
 } from './provider-common.mjs';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
@@ -137,15 +137,15 @@ export async function runGemini({
   const allowed = new Set(declarations.map((d) => d.name));
   const tools = [{ functionDeclarations: declarations }];
   const thinkingConfig = { thinkingLevel: effort };
-  const contents = [{ role: 'user', parts: [{ text: prompt }] }];
+  const contents = [{ role: 'user', parts: [{ text: prompt }, ...(reviewLengthInstruction(schema) ? [{ text: reviewLengthInstruction(schema) }] : [])] }];
   let turns = 0;
   let toolCalls = 0;
   let resolvedModel = model;
   let lastCandidate = null;
 
   try {
-    // Reserve the last permitted request for structured output with no tools.
-    while (turns < Math.max(1, maxTurns) - 1) {
+    // Reserve a final answer and (when the turn budget permits) one length-only format repair.
+    while (turns < explorationTurnLimit(maxTurns)) {
       turns += 1;
       const payload = await send({ contents, tools, generationConfig: { thinkingConfig, maxOutputTokens } });
       if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
@@ -190,63 +190,33 @@ export async function runGemini({
 
     const textOf = (candidate) => (candidate?.content?.parts ?? [])
       .map((part) => (typeof part?.text === 'string' ? part.text : '')).join('').trim();
-    const parse = (text) => {
-      if (!text) return null;
-      try {
-        const value = JSON.parse(text);
-        return validateResult(value, schema).ok ? value : null;
-      } catch { return null; }
+    let usedResponseJsonSchema = false;
+    const request = async (instruction) => {
+      turns += 1;
+      if (contents[contents.length - 1]?.role === 'user') contents[contents.length - 1].parts.push({ text: instruction });
+      else contents.push({ role: 'user', parts: [{ text: instruction }] });
+      const payload = await send({
+        contents,
+        generationConfig: { thinkingConfig, maxOutputTokens, responseMimeType: 'application/json', responseJsonSchema: toGeminiJsonSchema(schema) },
+      });
+      usedResponseJsonSchema = true;
+      if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
+      addUsage(payload?.usageMetadata);
+      const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+      if (budgetError) throw Object.assign(new Error(budgetError), { kind: 'budget' });
+      const candidate = payload?.candidates?.[0];
+      if (candidate?.finishReason === 'MAX_TOKENS') throw Object.assign(new Error('Gemini truncated the structured result (finishReason=MAX_TOKENS)'), { kind: 'malformed' });
+      if (candidate?.finishReason !== 'STOP' || candidate?.content?.parts?.some((part) => part.functionCall)) {
+        throw Object.assign(new Error(`Gemini did not finish the tool-disabled final review (finishReason=${candidate?.finishReason ?? 'missing'})`), { kind: 'execution' });
+      }
+      const parts = candidate?.content?.parts ?? [];
+      if (parts.length) contents.push({ role: 'model', parts: parts.map((part) => ({ ...part })) });
+      return textOf(candidate);
     };
-    const direct = parse(textOf(lastCandidate));
-    if (direct) {
-      return { ok: true, structured: direct, errorKind: 'none', error: null, meta: finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }) };
-    }
-    if (turns >= Math.max(1, maxTurns)) {
-      return failure('turns', `Gemini used the whole ${maxTurns}-turn budget without a structured result`,
-        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-
-    turns += 1;
-    const instruction = FINAL_REVIEW_INSTRUCTION;
-    if (contents[contents.length - 1]?.role === 'user') contents[contents.length - 1].parts.push({ text: instruction });
-    else contents.push({ role: 'user', parts: [{ text: instruction }] });
-    const payload = await send({
-      contents,
-      generationConfig: { thinkingConfig, maxOutputTokens, responseMimeType: 'application/json', responseJsonSchema: toGeminiJsonSchema(schema) },
-    });
-    if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
-    addUsage(payload?.usageMetadata);
-    const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
-    if (budgetError) {
-      return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-    const candidate = payload?.candidates?.[0];
-    if (candidate?.finishReason === 'MAX_TOKENS') {
-      return failure('malformed', 'Gemini truncated the structured result (finishReason=MAX_TOKENS)',
-        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-    if (candidate?.finishReason !== 'STOP' || candidate?.content?.parts?.some((part) => part.functionCall)) {
-      return failure('execution', `Gemini did not finish the tool-disabled final review (finishReason=${candidate?.finishReason ?? 'missing'})`,
-        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-    const text = textOf(candidate);
-    if (!text) {
-      return failure('malformed', 'Gemini returned an empty structured result',
-        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (error) {
-      return failure('malformed', `Gemini structured result was not JSON: ${error.message}`,
-        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-    const validation = validateResult(parsed, schema);
-    if (!validation.ok) {
-      return failure('malformed', `Gemini structured result did not match the review schema: ${validation.error}`,
-        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-    return { ok: true, structured: parsed, errorKind: 'none', error: null, meta: finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, used_response_json_schema: true }) };
+    const result = await finishReviewText({ initialText: textOf(lastCandidate), schema, canRequest: () => turns < Math.max(1, maxTurns), request });
+    const finalMeta = finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, used_response_json_schema: usedResponseJsonSchema, format_repair: result.repaired === true });
+    if (!result.ok) return failure('malformed', `Gemini structured result did not match the review schema: ${result.error}`, finalMeta);
+    return { ok: true, structured: result.structured, errorKind: 'none', error: null, meta: finalMeta };
   } catch (error) {
     return failure(error?.kind ?? 'execution', error?.message ?? String(error),
       finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, ...(error?.status ? { http_status: error.status } : {}) }));

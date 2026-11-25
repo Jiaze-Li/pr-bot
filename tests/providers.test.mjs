@@ -6,7 +6,7 @@ import { RESULT_SCHEMA } from '../scripts/review.mjs';
 import { ReadOnlyToolGateway } from '../scripts/tool-gateway.mjs';
 import { runDeepSeek, deepseekBaseUrl, schemaInstruction } from '../scripts/deepseek-provider.mjs';
 import { runGemini, toGeminiJsonSchema, geminiBaseUrl } from '../scripts/gemini-provider.mjs';
-import { validateResult } from '../scripts/provider-common.mjs';
+import { lengthRepairPlan, validateResult } from '../scripts/provider-common.mjs';
 
 const VALID = {
   summary: 'One file reviewed; the retry path is correct.',
@@ -386,7 +386,7 @@ test('both providers reserve the final turn when exploration keeps requesting to
   };
   const dsGateway = gateway();
   const dsFetch = scriptedFetch([
-    ...[1, 2, 3].map((i) => deepseekReply({
+    ...[1, 2].map((i) => deepseekReply({
       reasoning: `read ${i}`,
       // A tool-calling response is not a final answer, even if it happens to contain schema-valid JSON.
       content: JSON.stringify(VALID),
@@ -397,19 +397,19 @@ test('both providers reserve the final turn when exploration keeps requesting to
   const ds = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: dsGateway, env, fetchImpl: dsFetch, maxTurns: 4 });
   assert.equal(ds.ok, true, ds.error);
   assert.deepEqual(ds.structured, partial);
-  assert.equal(ds.meta.num_turns, 4);
-  assert.equal(dsGateway.calls.length, 3);
-  assert.equal(dsFetch.calls.length, 4);
+  assert.equal(ds.meta.num_turns, 3);
+  assert.equal(dsGateway.calls.length, 2);
+  assert.equal(dsFetch.calls.length, 3);
   const dsFinal = dsFetch.calls.at(-1).body;
   assert.equal(dsFinal.tool_choice, 'none');
   assert.deepEqual(dsFinal.response_format, { type: 'json_object' });
-  assert.deepEqual(dsFinal.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoning_content), ['read 1', 'read 2', 'read 3']);
-  assert.deepEqual(dsFinal.messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id), ['call_1', 'call_2', 'call_3']);
+  assert.deepEqual(dsFinal.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoning_content), ['read 1', 'read 2']);
+  assert.deepEqual(dsFinal.messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id), ['call_1', 'call_2']);
   assert.match(dsFinal.messages.at(-1).content, /coverage.unreviewedPaths/);
 
   const gmGateway = gateway();
   const gmFetch = scriptedFetch([
-    ...[1, 2, 3].map((i) => geminiReply({ parts: [
+    ...[1, 2].map((i) => geminiReply({ parts: [
       { text: JSON.stringify(VALID) },
       { functionCall: { name: 'Read', args: { file_path: 'src/a.js' }, id: `call_${i}` }, thoughtSignature: `sig-${i}` },
     ] })),
@@ -418,15 +418,15 @@ test('both providers reserve the final turn when exploration keeps requesting to
   const gm = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gmGateway, env: geminiEnv, fetchImpl: gmFetch, maxTurns: 4 });
   assert.equal(gm.ok, true, gm.error);
   assert.deepEqual(gm.structured, partial);
-  assert.equal(gm.meta.num_turns, 4);
+  assert.equal(gm.meta.num_turns, 3);
   assert.equal(gm.meta.used_response_json_schema, true);
-  assert.equal(gmGateway.calls.length, 3);
-  assert.equal(gmFetch.calls.length, 4);
+  assert.equal(gmGateway.calls.length, 2);
+  assert.equal(gmFetch.calls.length, 3);
   const gmFinal = gmFetch.calls.at(-1).body;
   assert.equal(gmFinal.tools, undefined);
   assert.ok(gmFinal.generationConfig.responseJsonSchema);
-  assert.deepEqual(gmFinal.contents.filter((c) => c.role === 'model').map((c) => c.parts.find((p) => p.functionCall).thoughtSignature), ['sig-1', 'sig-2', 'sig-3']);
-  assert.deepEqual(gmFinal.contents.flatMap((c) => c.parts.filter((p) => p.functionResponse).map((p) => p.functionResponse.id)), ['call_1', 'call_2', 'call_3']);
+  assert.deepEqual(gmFinal.contents.filter((c) => c.role === 'model').map((c) => c.parts.find((p) => p.functionCall).thoughtSignature), ['sig-1', 'sig-2']);
+  assert.deepEqual(gmFinal.contents.flatMap((c) => c.parts.filter((p) => p.functionResponse).map((p) => p.functionResponse.id)), ['call_1', 'call_2']);
   assert.match(gmFinal.contents.at(-1).parts.at(-1).text, /coverage.unreviewedPaths/);
 });
 
@@ -442,6 +442,112 @@ test('a one-turn budget is final-output-only for both providers', async () => {
   assert.equal(gm.meta.num_turns, 1);
   assert.equal(gmFetch.calls[0].body.tools, undefined);
   assert.ok(gmFetch.calls[0].body.generationConfig.responseJsonSchema);
+});
+
+
+const findingText = 'When CACHE_MISS is true, the handler skips persisting the record, so RECORD_LOST occurs.';
+const OVERLONG = {
+  ...VALID,
+  findings: [{ severity: 'P2', title: 'Missing persistence', path: 'src/a.js', failure_path: (findingText + ' ').repeat(10) }],
+};
+const SHORTENED = { ...OVERLONG, findings: [{ ...OVERLONG.findings[0], failure_path: findingText }] };
+
+test('length repair accepts only overlong descriptive fields, not changes to findings, verdicts or coverage', () => {
+  const original = { ...OVERLONG, prior_findings: [{ id: 'F001', verification: 'STILL_OPEN', evidence: 'Still reproducible.' }] };
+  const repaired = { ...SHORTENED, prior_findings: original.prior_findings };
+  const plan = lengthRepairPlan(original, RESULT_SCHEMA);
+  assert.ok(plan);
+  assert.match(plan.instruction, /\$\.findings\[0\]\.failure_path: maximum 600 characters/);
+  assert.equal(plan.accepts(repaired), true);
+  for (const changed of [
+    { ...repaired, findings: [] },
+    { ...repaired, findings: [{ ...repaired.findings[0], severity: 'P3' }] },
+    { ...repaired, findings: [{ ...repaired.findings[0], path: 'src/b.js' }] },
+    { ...repaired, findings: [{ ...repaired.findings[0], title: 'different title' }] },
+    { ...repaired, findings: [{ ...repaired.findings[0], failure_path: '  ' }] },
+    { ...repaired, coverage: { ...repaired.coverage, complete: false, unreviewedPaths: ['src/b.js'] } },
+    { ...repaired, prior_findings: [{ ...original.prior_findings[0], verification: 'FIXED' }] },
+  ]) assert.equal(plan.accepts(changed), false);
+  assert.equal(lengthRepairPlan({ ...original, findings: [{ ...original.findings[0], severity: 'P9' }] }, RESULT_SCHEMA), null);
+  assert.equal(lengthRepairPlan({ ...original, extra: 1 }, RESULT_SCHEMA), null);
+});
+
+test('both providers reserve and charge a single format repair after tool exploration and final output', async () => {
+  const dsFetch = scriptedFetch([
+    ...[1, 2].map((i) => deepseekReply({ reasoning: 'read', toolCalls: [{ id: `c${i}`, type: 'function', function: { name: 'Read', arguments: '{"file_path":"src/a.js"}' } }] })),
+    deepseekReply({ content: JSON.stringify(OVERLONG), reasoning: 'reviewed', usage: { prompt_tokens: 1000, completion_tokens: 200 } }),
+    deepseekReply({ content: JSON.stringify(SHORTENED), usage: { prompt_tokens: 500, completion_tokens: 100 } }),
+  ]);
+  const dsGateway = gateway();
+  const ds = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: dsGateway, env, fetchImpl: dsFetch, maxTurns: 4 });
+  assert.equal(ds.ok, true, ds.error);
+  assert.deepEqual(ds.structured, SHORTENED);
+  assert.equal(ds.meta.format_repair, true);
+  assert.equal(ds.meta.num_turns, 4);
+  assert.equal(ds.meta.input_tokens, 1500);
+  assert.equal(ds.meta.output_tokens, 300);
+  assert.equal(dsGateway.calls.length, 2);
+  assert.equal(dsFetch.calls.at(-1).body.tool_choice, 'none');
+  assert.match(dsFetch.calls.at(-1).body.messages.at(-1).content, /FORMAT REPAIR ONLY/);
+  assert.equal(dsFetch.calls.at(-1).body.messages.at(-2).content, JSON.stringify(OVERLONG));
+  assert.match(dsFetch.calls[0].body.messages[0].content, /findings\[\]\.failure_path <= 600 characters/);
+
+  const gmFetch = scriptedFetch([
+    ...[1, 2].map((i) => geminiReply({ parts: [{ functionCall: { name: 'Read', args: { file_path: 'src/a.js' }, id: `c${i}` }, thoughtSignature: `sig${i}` }] })),
+    geminiReply({ parts: [{ text: JSON.stringify(OVERLONG) }], usage: { promptTokenCount: 1000, candidatesTokenCount: 200 } }),
+    geminiReply({ parts: [{ text: JSON.stringify(SHORTENED) }], usage: { promptTokenCount: 500, candidatesTokenCount: 100 } }),
+  ]);
+  const gmGateway = gateway();
+  const gm = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gmGateway, env: geminiEnv, fetchImpl: gmFetch, maxTurns: 4 });
+  assert.equal(gm.ok, true, gm.error);
+  assert.deepEqual(gm.structured, SHORTENED);
+  assert.equal(gm.meta.format_repair, true);
+  assert.equal(gm.meta.num_turns, 4);
+  assert.equal(gm.meta.input_tokens, 1500);
+  assert.equal(gm.meta.output_tokens, 300);
+  assert.equal(gmGateway.calls.length, 2);
+  assert.equal(gmFetch.calls.at(-1).body.tools, undefined);
+  assert.match(gmFetch.calls.at(-1).body.contents.at(-1).parts.at(-1).text, /FORMAT REPAIR ONLY/);
+  assert.equal(gmFetch.calls.at(-1).body.contents.at(-2).parts[0].text, JSON.stringify(OVERLONG));
+  assert.match(gmFetch.calls[0].body.contents[0].parts[1].text, /findings\[\]\.failure_path <= 600 characters/);
+});
+
+test('format repair rejects dropped findings, cannot retry again, and respects remaining turn and cost budgets', async () => {
+  for (const [run, e, reply] of [
+    [runDeepSeek, env, (v) => deepseekReply({ content: JSON.stringify(v) })],
+    [runGemini, geminiEnv, (v) => geminiReply({ parts: [{ text: JSON.stringify(v) }] })],
+  ]) {
+    for (const bad of [{ ...SHORTENED, findings: [] }, OVERLONG]) {
+      const f = scriptedFetch([reply(OVERLONG), reply(bad), reply(SHORTENED)]);
+      const r = await run({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: e, fetchImpl: f, maxTurns: 14 });
+      assert.equal(r.ok, false);
+      assert.equal(r.errorKind, 'malformed');
+      assert.equal(f.calls.length, 2, 'never a second repair');
+    }
+    const f = scriptedFetch([reply(OVERLONG)]);
+    const r = await run({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: e, fetchImpl: f, maxTurns: 1 });
+    assert.equal(r.ok, false);
+    assert.equal(f.calls.length, 1);
+    const invalid = scriptedFetch([reply({ ...OVERLONG, coverage: {} }), reply(SHORTENED)]);
+    const bad = await run({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: e, fetchImpl: invalid, maxTurns: 14 });
+    assert.equal(bad.ok, false);
+    assert.equal(invalid.calls.length, 1, 'structural errors cannot be repaired by changing conclusions');
+  }
+  for (const [run, e, replies] of [
+    [runDeepSeek, { ...env, DEEPSEEK_INPUT_PRICE_PER_MTOK: '1', DEEPSEEK_OUTPUT_PRICE_PER_MTOK: '2' }, [
+      deepseekReply({ content: JSON.stringify(OVERLONG), usage: { prompt_tokens: 100_000, completion_tokens: 50_000 } }),
+      deepseekReply({ content: JSON.stringify(SHORTENED), usage: { prompt_tokens: 300_000, completion_tokens: 100_000 } }),
+    ]],
+    [runGemini, { ...geminiEnv, GEMINI_INPUT_PRICE_PER_MTOK: '1', GEMINI_OUTPUT_PRICE_PER_MTOK: '2' }, [
+      geminiReply({ parts: [{ text: JSON.stringify(OVERLONG) }], usage: { promptTokenCount: 100_000, candidatesTokenCount: 50_000 } }),
+      geminiReply({ parts: [{ text: JSON.stringify(SHORTENED) }], usage: { promptTokenCount: 300_000, candidatesTokenCount: 100_000 } }),
+    ]],
+  ]) {
+    const r = await run({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: e, fetchImpl: scriptedFetch(replies), maxTurns: 3, maxBudgetUsd: 0.5 });
+    assert.equal(r.ok, false);
+    assert.equal(r.errorKind, 'budget');
+    assert.equal(r.meta.num_turns, 2);
+  }
 });
 
 // ---------------------------------------------------------------- shared validation
