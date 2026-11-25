@@ -121,6 +121,9 @@ test('DeepSeek: a prose answer is followed by one tool-disabled json_object requ
   const final = fetchImpl.calls[1].body;
   assert.deepEqual(final.response_format, { type: 'json_object' });
   assert.equal(final.tool_choice, 'none', 'the structured turn cannot call tools');
+  assert.equal(final.reasoning_effort, 'low');
+  assert.equal(outcome.meta.final_effort, 'low');
+  assert.equal(outcome.meta.finish_reason, 'stop');
   assert.equal(final.tools.length, 3, 'retain declarations to preserve DeepSeek reasoning context');
   assert.equal(final.messages.find((m) => m.role === 'assistant').reasoning_content, 'reasoning text');
   assert.match(final.messages.at(-1).content, /final review/);
@@ -548,6 +551,60 @@ test('format repair rejects dropped findings, cannot retry again, and respects r
     assert.equal(r.errorKind, 'budget');
     assert.equal(r.meta.num_turns, 2);
   }
+});
+
+
+test('#234: a truncated final answer can recover once within budget, retaining analysis and disabling tools', async () => {
+  const read = deepseekReply({ reasoning: 'read evidence', toolCalls: [{ id: 'call_1', type: 'function', function: { name: 'Read', arguments: '{"file_path":"src/a.js"}' } }] });
+  const truncated = deepseekReply({ finish: 'length', content: '{"summary":"unfinished', reasoning: 'finished analysis', usage: { prompt_tokens: 1000, completion_tokens: 200 } });
+  const recovered = deepseekReply({ content: JSON.stringify(VALID), usage: { prompt_tokens: 500, completion_tokens: 100 } });
+  const f = scriptedFetch([read, truncated, recovered]);
+  const gw = gateway();
+  const r = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gw, env, fetchImpl: f, maxTurns: 3 });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.meta.num_turns, 3);
+  assert.equal(r.meta.truncation_recovery, true);
+  assert.equal(r.meta.format_repair, false);
+  assert.equal(r.meta.final_effort, 'low');
+  assert.equal(r.meta.finish_reason, 'stop');
+  assert.equal(r.meta.input_tokens, 1500);
+  assert.equal(r.meta.output_tokens, 300);
+  assert.equal(gw.calls.length, 1);
+  assert.equal(f.calls[0].body.reasoning_effort, 'high');
+  assert.ok(f.calls.slice(1).every(c => c.body.tool_choice === 'none' && c.body.reasoning_effort === 'low'));
+  const final = f.calls.at(-1).body.messages;
+  assert.equal(final.at(-2).reasoning_content, 'finished analysis');
+  assert.equal(final.at(-2).content, '{"summary":"unfinished');
+  assert.match(final.at(-1).content, /previous final JSON response was truncated/);
+});
+
+test('truncation recovery cannot retry twice, also repair the result, retry a repair, or exceed budget', async () => {
+  const prose = deepseekReply({ content: 'analysis complete' });
+  const cut = deepseekReply({ finish: 'length', reasoning: 'analysis' });
+  for (const second of [cut, deepseekReply({ content: JSON.stringify(OVERLONG) })]) {
+    const f = scriptedFetch([prose, cut, second, deepseekReply({ content: JSON.stringify(VALID) })]);
+    const r = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: f, maxTurns: 14 });
+    assert.equal(r.ok, false);
+    assert.equal(r.errorKind, 'malformed');
+    assert.equal(f.calls.length, 3, 'one recovery only');
+    assert.equal(r.meta.truncation_recovery, true);
+  }
+  const noRoom = scriptedFetch([cut]);
+  const a = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: noRoom, maxTurns: 1 });
+  assert.equal(a.ok, false);
+  assert.equal(noRoom.calls.length, 1);
+  assert.equal(a.meta.finish_reason, 'length');
+  const repair = scriptedFetch([deepseekReply({ content: JSON.stringify(OVERLONG) }), cut, deepseekReply({ content: JSON.stringify(VALID) })]);
+  const b = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: repair, maxTurns: 14 });
+  assert.equal(b.ok, false);
+  assert.equal(b.meta.format_repair, true);
+  assert.equal(b.meta.truncation_recovery, false);
+  assert.equal(repair.calls.length, 2);
+  const budget = scriptedFetch([prose, deepseekReply({ finish: 'length', usage: { prompt_tokens: 100_000, completion_tokens: 50_000 } }), deepseekReply({ content: JSON.stringify(VALID), usage: { prompt_tokens: 300_000, completion_tokens: 100_000 } })]);
+  const c = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: { ...env, DEEPSEEK_INPUT_PRICE_PER_MTOK: '1', DEEPSEEK_OUTPUT_PRICE_PER_MTOK: '2' }, fetchImpl: budget, maxTurns: 3, maxBudgetUsd: 0.5 });
+  assert.equal(c.ok, false);
+  assert.equal(c.errorKind, 'budget');
+  assert.equal(c.meta.num_turns, 3);
 });
 
 // ---------------------------------------------------------------- shared validation

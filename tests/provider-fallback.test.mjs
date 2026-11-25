@@ -70,7 +70,7 @@ test('an execution failure switches to the fallback with the SAME prompt, and bo
 test('the diagnostics record which provider and model actually ran, and mark the fallback execution', async () => {
   const { logs } = await run({
     primary: (call) => ({ ...model.fail('boom'), meta: { provider: 'deepseek', requested_model: 'deepseek-flash', input_tokens: 10, output_tokens: 2 } }),
-    fallback: (call) => ({ ...model.ok({ assigned: call.assigned }), meta: { provider: 'gemini', resolved_model: 'gemini-flash-latest', input_tokens: 20, output_tokens: 3, cost_source: 'configured-prices', cost_usd_nominal: 0.01 } }),
+    fallback: (call) => ({ ...model.ok({ assigned: call.assigned, findings: [P2] }), meta: { provider: 'gemini', resolved_model: 'gemini-flash-latest', input_tokens: 20, output_tokens: 3, cost_source: 'configured-prices', cost_usd_nominal: 0.01, final_effort: 'medium', finish_reason: 'STOP', format_repair: false } }),
   });
   const rows = diagnostics(logs);
   assert.equal(rows.length, 2);
@@ -80,6 +80,14 @@ test('the diagnostics record which provider and model actually ran, and mark the
   assert.equal(rows[1].input_tokens, 20);
   assert.equal(rows[1].cost_usd_nominal, 0.01);
   assert.match(rows[1].cost_note, /configured per-Mtok prices/);
+  assert.equal(rows[0].result_accepted, false);
+  assert.deepEqual(rows[0].new_finding_ids, []);
+  assert.equal(rows[1].result_accepted, true);
+  assert.deepEqual(rows[1].new_finding_ids, ['F001']);
+  assert.equal(rows[1].credited_files, 1);
+  assert.equal(rows[1].final_effort, 'medium');
+  assert.equal(rows[1].finish_reason, 'STOP');
+  assert.equal(rows[1].format_repair, false);
 });
 
 test('a produced review is never re-rolled: findings, an empty result or an uncredited coverage claim stay on the primary', async () => {
