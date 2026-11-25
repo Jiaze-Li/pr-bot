@@ -30,11 +30,11 @@ and report coverage.complete=true with reviewedPaths ["src/answer.txt"]. Do not 
 
 const liveEnv = (keys) => Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 
-async function liveRun({ name, credential, keys, run }) {
+async function liveRun({ name, credential, keys, prompt: customPrompt, run }) {
   if (!enabled) return { skip: 'RUN_LIVE_PROVIDER_TESTS is not 1: real API verification not requested' };
   if (!process.env[credential]) return { skip: `${credential} is not set: real ${name} API verification cannot run` };
   const { gw, prompt } = sandbox();
-  const outcome = await run({ prompt, gw, env: liveEnv(keys) });
+  const outcome = await run({ prompt: customPrompt ?? prompt, gw, env: liveEnv(keys) });
   return { outcome, gw };
 }
 
@@ -61,11 +61,14 @@ test('live Gemini: tool calling + structured output against the real API', async
     name: 'Gemini',
     credential: 'GEMINI_API_KEY',
     keys: ['GEMINI_API_KEY', 'GEMINI_API_BASE_URL', 'GEMINI_MODEL', 'GEMINI_THINKING_LEVEL'],
-    run: ({ prompt, gw: gateway, env }) => runGemini({ prompt, schema: RESULT_SCHEMA, toolGateway: gateway, env, maxTurns: 4, timeoutMs: 120_000 }),
+    // Force a plain-prose reply first so runGemini must exercise the final responseJsonSchema request.
+    prompt: `Read src/answer.txt with the Read tool. After reading it, reply in one short plain-text sentence (do NOT output JSON) stating the exact token it contains.`,
+    run: ({ prompt, gw: gateway, env }) => runGemini({ prompt, schema: RESULT_SCHEMA, toolGateway: gateway, env, maxTurns: 5, timeoutMs: 120_000 }),
   });
   if (skip) return t.skip(skip);
   assert.equal(outcome.ok, true, outcome.error);
   assert.equal(outcome.meta.provider, 'gemini');
+  assert.ok(outcome.meta.num_turns >= 3, `expected tool turn + prose turn + final responseJsonSchema turn, got ${outcome.meta.num_turns}`);
   assert.ok(outcome.meta.input_tokens > 0 && outcome.meta.output_tokens > 0, 'the API reported token usage');
   assert.equal(validateResult(outcome.structured, RESULT_SCHEMA).ok, true);
   assert.ok(gw.history.some((entry) => entry.toolName === 'Read' && entry.status === 'success'),

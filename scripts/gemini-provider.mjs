@@ -132,7 +132,7 @@ export async function runGemini({
   };
 
   const declarations = readToolDeclarations(toolGateway).map((decl) => ({
-    name: decl.name, description: decl.description, parameters: toGeminiJsonSchema(decl.parameters),
+    name: decl.name, description: decl.description, parametersJsonSchema: toGeminiJsonSchema(decl.parameters),
   }));
   const allowed = new Set(declarations.map((d) => d.name));
   const tools = [{ functionDeclarations: declarations }];
@@ -212,7 +212,7 @@ export async function runGemini({
     else contents.push({ role: 'user', parts: [{ text: instruction }] });
     const payload = await send({
       contents,
-      generationConfig: { thinkingConfig, maxOutputTokens, responseMimeType: 'application/json', responseSchema: toGeminiJsonSchema(schema) },
+      generationConfig: { thinkingConfig, maxOutputTokens, responseMimeType: 'application/json', responseJsonSchema: toGeminiJsonSchema(schema) },
     });
     if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
     addUsage(payload?.usageMetadata);
