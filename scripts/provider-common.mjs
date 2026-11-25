@@ -104,75 +104,7 @@ export function reviewLengthInstruction(schema) {
 }
 
 const parentOf = (value, path) => path.slice(0, -1).reduce((obj, key) => obj?.[key], value);
-const pathLabel = (path) => '{ provider, model, effort, maxTurns, startedAt, maxBudgetUsd = null }) {
-  return {
-    provider, requested_model: model, resolved_model: model, effort: effort ?? null, max_turns: maxTurns,
-    num_turns: 0, tool_calls: 0, duration_ms: Date.now() - startedAt,
-    input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null,
-    thoughts_tokens: null, total_tokens: null,
-    cost_usd_nominal: null, cost_source: 'unknown', usd_cap: num(maxBudgetUsd),
-  };
-}
-
-// A nominal USD estimate from configured per-million-token prices. Without prices the cost is unknown, never zero:
-// "not free", just not reported.
-export function estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice = null, outputIncludesThoughts = false }) {
-  if (!(Number.isFinite(inputPrice) && inputPrice >= 0) || !(Number.isFinite(outputPrice) && outputPrice >= 0)) return null;
-  const input = num(usage?.input_tokens) ?? 0;
-  const cached = num(usage?.cache_read_input_tokens) ?? 0;
-  const output = (num(usage?.output_tokens) ?? 0) + (outputIncludesThoughts ? 0 : (num(usage?.thoughts_tokens) ?? 0));
-  const cachedPrice = Number.isFinite(cachedInputPrice) ? cachedInputPrice : inputPrice;
-  const billedInput = Math.max(0, input - cached);
-  return (billedInput * inputPrice + cached * cachedPrice + output * outputPrice) / 1_000_000;
-}
-
-export function priceFromEnv(env, key) {
-  const raw = env?.[key];
-  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-export function checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice = null, outputIncludesThoughts = false }) {
-  if (meta.usd_cap === null || inputPrice === null || outputPrice === null) return null;
-  const spent = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice, outputIncludesThoughts });
-  if (spent !== null && spent > meta.usd_cap) {
-    return `${meta.provider} nominal cost ${spent.toFixed(4)} exceeded the per-execution cap ${meta.usd_cap}`;
-  }
-  return null;
-}
-
-// A provider API key must only ever be sent to an https endpoint, or to a local test server. `allowAnyHost` exists
-// for providers whose base URL is meant to be swapped (DeepSeek -> an OpenAI-compatible gateway).
-export function normalizeBaseUrl(raw, { fallback, hosts = null }) {
-  const value = String(raw ?? '').trim().replace(/\/+$/, '');
-  if (!value) return fallback;
-  let url;
-  try { url = new URL(value); } catch { throw new Error(`provider base URL is not a valid URL: ${value}`); }
-  const local = /^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(value);
-  if (url.protocol !== 'https:' && !local) {
-    throw new Error(`provider base URL must be https (or a local test server): ${value}`);
-  }
-  if (hosts && !local && !hosts.includes(url.host)) {
-    throw new Error(`provider base URL must be ${hosts.join(' or ')}: ${value}`);
-  }
-  return value;
-}
-
-export function statusClass(status) {
-  if (status === 401 || status === 403) return 'config';
-  if (status === 402 || status === 429) return 'unavailable';
-  if (status >= 500 && status <= 599) return 'unavailable';
-  if (status === 404) return 'config';
-  return 'execution';
-}
-
-// `ReadOnlyToolGateway.getToolDeclarations` is static on the real class, while test doubles may define it on the
-// instance. Checking both keeps every provider wired to the real Read/Glob/Grep schemas.
-export function readToolDeclarations(toolGateway) {
-  return toolGateway?.getToolDeclarations?.() ?? toolGateway?.constructor?.getToolDeclarations?.() ?? [];
-}
- + path.map((key) => typeof key === 'number' ? `[${key}]` : `.${key}`).join('');
+const pathLabel = (path) => '$' + path.map((key) => typeof key === 'number' ? `[${key}]` : `.${key}`).join('');
 
 /** Recover ONLY JSON that would already satisfy the strict schema but for overlong descriptive strings.
  * Mask exactly those strings and compare the full remaining object after repair. This rejects removed findings,
