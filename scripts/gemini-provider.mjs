@@ -4,7 +4,7 @@
 // Used only when the primary provider fails to execute. Nothing here decides whether a review is good enough; that
 // is the executor's job. One call here is one attempt in the PR's budget, charged by the caller.
 import {
-  baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
+  FINAL_REVIEW_INSTRUCTION, baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
 } from './provider-common.mjs';
 
 export const DEFAULT_GEMINI_MODEL = 'gemini-flash-latest';
@@ -144,7 +144,8 @@ export async function runGemini({
   let lastCandidate = null;
 
   try {
-    while (turns < Math.max(1, maxTurns)) {
+    // Reserve the last permitted request for structured output with no tools.
+    while (turns < Math.max(1, maxTurns) - 1) {
       turns += 1;
       const payload = await send({ contents, tools, generationConfig: { thinkingConfig, maxOutputTokens } });
       if (typeof payload?.modelVersion === 'string' && payload.modelVersion) resolvedModel = payload.modelVersion;
@@ -154,7 +155,6 @@ export async function runGemini({
         return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
       const candidate = payload?.candidates?.[0];
-      lastCandidate = candidate;
       const parts = Array.isArray(candidate?.content?.parts) ? candidate.content.parts : [];
       const functionCalls = parts.filter((part) => part?.functionCall);
       // Every model part (text, functionCall, thoughtSignature) must go back verbatim in later turns.
@@ -163,7 +163,7 @@ export async function runGemini({
         return failure(candidate.finishReason === 'MAX_TOKENS' ? 'malformed' : 'execution', `Gemini stopped with finishReason=${candidate.finishReason}`,
           finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
-      if (!functionCalls.length) break;
+      if (!functionCalls.length) { lastCandidate = candidate; break; }
       if (toolCalls + functionCalls.length > maxTurns * 4) {
         return failure('turns', `Gemini exceeded the tool call limit (${maxTurns * 4})`,
           finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
@@ -207,7 +207,7 @@ export async function runGemini({
     }
 
     turns += 1;
-    const instruction = 'Return the final review now as one JSON object that matches the response schema exactly. No prose.';
+    const instruction = FINAL_REVIEW_INSTRUCTION;
     if (contents[contents.length - 1]?.role === 'user') contents[contents.length - 1].parts.push({ text: instruction });
     else contents.push({ role: 'user', parts: [{ text: instruction }] });
     const payload = await send({
@@ -223,6 +223,10 @@ export async function runGemini({
     const candidate = payload?.candidates?.[0];
     if (candidate?.finishReason === 'MAX_TOKENS') {
       return failure('malformed', 'Gemini truncated the structured result (finishReason=MAX_TOKENS)',
+        finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
+    }
+    if (candidate?.finishReason !== 'STOP' || candidate?.content?.parts?.some((part) => part.functionCall)) {
+      return failure('execution', `Gemini did not finish the tool-disabled final review (finishReason=${candidate?.finishReason ?? 'missing'})`,
         finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
     }
     const text = textOf(candidate);
