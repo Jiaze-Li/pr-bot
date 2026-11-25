@@ -187,6 +187,50 @@ test('DeepSeek: configured prices turn usage into a nominal cost estimate', asyn
   assert.equal(Math.round(outcome.meta.cost_usd_nominal * 1000) / 1000, 0.49);
 });
 
+test('DeepSeek: reasoning_tokens inside completion_tokens are not double-counted in cost or budget cap', async () => {
+  const fetchImpl = scriptedFetch([deepseekReply({
+    content: JSON.stringify(VALID),
+    usage: {
+      prompt_tokens: 1_000_000,
+      completion_tokens: 500_000,
+      total_tokens: 1_500_000,
+      prompt_cache_hit_tokens: 0,
+      completion_tokens_details: { reasoning_tokens: 400_000 },
+    },
+  })]);
+  const outcome = await runDeepSeek({
+    prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), fetchImpl, maxBudgetUsd: 0.55,
+    env: { DEEPSEEK_API_KEY: 'k', DEEPSEEK_INPUT_PRICE_PER_MTOK: '0.28', DEEPSEEK_OUTPUT_PRICE_PER_MTOK: '0.42' },
+  });
+  assert.equal(outcome.ok, true, outcome.error);
+  assert.equal(outcome.meta.output_tokens, 500_000);
+  assert.equal(outcome.meta.thoughts_tokens, 400_000);
+  assert.equal(outcome.meta.over_budget, false);
+  // 1.0M * 0.28 + 0.5M * 0.42 = 0.49 (double-counting reasoning_tokens would yield 0.658 > 0.55).
+  assert.equal(Math.round(outcome.meta.cost_usd_nominal * 1000) / 1000, 0.49);
+
+  // Stage B also checks the cumulative budget without double-counting reasoning_tokens.
+  const stageB = await runDeepSeek({
+    prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), maxBudgetUsd: 0.55,
+    env: { DEEPSEEK_API_KEY: 'k', DEEPSEEK_INPUT_PRICE_PER_MTOK: '0.28', DEEPSEEK_OUTPUT_PRICE_PER_MTOK: '0.42' },
+    fetchImpl: scriptedFetch([
+      deepseekReply({
+        content: 'not json yet',
+        usage: { prompt_tokens: 500_000, completion_tokens: 200_000, total_tokens: 700_000, completion_tokens_details: { reasoning_tokens: 150_000 } },
+      }),
+      deepseekReply({
+        content: JSON.stringify(VALID),
+        usage: { prompt_tokens: 500_000, completion_tokens: 300_000, total_tokens: 800_000, completion_tokens_details: { reasoning_tokens: 250_000 } },
+      }),
+    ]),
+  });
+  assert.equal(stageB.ok, true, stageB.error);
+  assert.equal(stageB.meta.output_tokens, 500_000);
+  assert.equal(stageB.meta.thoughts_tokens, 400_000);
+  assert.equal(stageB.meta.over_budget, false);
+  assert.equal(Math.round(stageB.meta.cost_usd_nominal * 1000) / 1000, 0.49);
+});
+
 test('DeepSeek: the turn budget, a timeout and unknown tools are execution failures, not silent successes', async () => {
   const loop = Array.from({ length: 2 }, () => deepseekReply({
     toolCalls: [{ id: 'c', type: 'function', function: { name: 'Glob', arguments: '{"pattern":"**/*.js"}' } }],

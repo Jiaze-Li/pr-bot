@@ -91,7 +91,8 @@ export async function runDeepSeek({
       total_tokens: sawUsage ? usage.total_tokens : null,
     });
     if (sawUsage) {
-      const cost = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+      // DeepSeek's completion_tokens already includes completion_tokens_details.reasoning_tokens.
+      const cost = estimateCostUsd({ usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice, outputIncludesThoughts: true });
       if (cost !== null) { meta.cost_usd_nominal = cost; meta.cost_source = 'configured-prices'; }
     }
     meta.over_budget = Boolean(meta.usd_cap !== null && meta.cost_usd_nominal !== null && meta.cost_usd_nominal > meta.usd_cap);
@@ -153,7 +154,7 @@ export async function runDeepSeek({
       });
       if (typeof payload?.model === 'string' && payload.model) resolvedModel = payload.model;
       addUsage(payload?.usage);
-      const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+      const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice, outputIncludesThoughts: true });
       if (budgetError) {
         return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
       }
@@ -241,7 +242,7 @@ export async function runDeepSeek({
     });
     if (typeof payload?.model === 'string' && payload.model) resolvedModel = payload.model;
     addUsage(payload?.usage);
-    const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice });
+    const budgetError = checkBudgetCap({ meta, usage, inputPrice, outputPrice, cachedInputPrice: cachedPrice, outputIncludesThoughts: true });
     if (budgetError) {
       return failure('budget', budgetError, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
     }
