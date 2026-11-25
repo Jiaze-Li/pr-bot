@@ -323,11 +323,14 @@ test('Gemini: a non-JSON answer is followed by one schema-constrained request wi
   ]);
   const outcome = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: geminiEnv, fetchImpl });
   assert.equal(outcome.ok, true, outcome.error);
+  assert.equal(outcome.meta.used_response_json_schema, true);
   const final = fetchImpl.calls[1].body;
   assert.equal(final.tools, undefined);
   assert.equal(final.generationConfig.responseMimeType, 'application/json');
   assert.equal(final.generationConfig.responseSchema, undefined, 'use responseJsonSchema rather than OpenAPI responseSchema');
   assert.equal(final.generationConfig.responseJsonSchema.additionalProperties, false);
+  assert.equal(final.generationConfig.responseJsonSchema.properties.findings.maxItems, undefined, 'array length bounds are stripped for Gemini serving state limit');
+  assert.equal(final.generationConfig.responseJsonSchema.properties.coverage.properties.reviewedPaths.maxItems, undefined);
   assert.equal(final.generationConfig.responseJsonSchema.required.includes('coverage'), true);
   assert.equal(final.generationConfig.responseJsonSchema.properties.coverage.properties.complete.type, 'boolean');
 });
