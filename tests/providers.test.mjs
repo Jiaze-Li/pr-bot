@@ -111,7 +111,7 @@ test('DeepSeek: multi-turn tool calling with thinking mode echoes reasoning_cont
   assert.equal(outcome.meta.cost_source, 'unknown');
 });
 
-test('DeepSeek: a prose answer is followed by one json_object request without tools, and the result is schema-validated', async () => {
+test('DeepSeek: a prose answer is followed by one tool-disabled json_object request, preserving reasoning', async () => {
   const fetchImpl = scriptedFetch([
     deepseekReply({ content: 'I looked at the change and it seems fine.', reasoning: 'reasoning text' }),
     deepseekReply({ content: JSON.stringify(VALID) }),
@@ -120,8 +120,9 @@ test('DeepSeek: a prose answer is followed by one json_object request without to
   assert.equal(outcome.ok, true, outcome.error);
   const final = fetchImpl.calls[1].body;
   assert.deepEqual(final.response_format, { type: 'json_object' });
-  assert.equal(final.tools, undefined, 'the structured turn carries no tools');
-  assert.equal(final.messages.some((m) => m.reasoning_content), false, 'reasoning_content is not echoed without tools');
+  assert.equal(final.tool_choice, 'none', 'the structured turn cannot call tools');
+  assert.equal(final.tools.length, 3, 'retain declarations to preserve DeepSeek reasoning context');
+  assert.equal(final.messages.find((m) => m.role === 'assistant').reasoning_content, 'reasoning text');
   assert.match(final.messages.at(-1).content, /final review/);
 });
 
@@ -236,7 +237,7 @@ test('DeepSeek: the turn budget, a timeout and unknown tools are execution failu
     toolCalls: [{ id: 'c', type: 'function', function: { name: 'Glob', arguments: '{"pattern":"**/*.js"}' } }],
   }));
   const turns = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: scriptedFetch(loop), maxTurns: 2 });
-  assert.equal(turns.errorKind, 'turns');
+  assert.equal(turns.errorKind, 'execution', 'a tool call in the tool-disabled final request is not a valid review');
   assert.equal(turns.meta.num_turns, 2);
 
   const timedOut = await runDeepSeek({
@@ -375,6 +376,72 @@ test('Gemini: usage and configured prices are reported as a nominal estimate', a
   assert.equal(outcome.meta.cost_source, 'configured-prices');
   // 1.0M input * 0.30 + (0.1M output + 0.4M thoughts) * 2.50 = 0.30 + 1.25
   assert.equal(Math.round(outcome.meta.cost_usd_nominal * 1000) / 1000, 1.55);
+});
+
+
+test('both providers reserve the final turn when exploration keeps requesting tools, retaining honest partial coverage', async () => {
+  const partial = {
+    ...VALID,
+    coverage: { complete: false, reviewedPaths: ['src/a.js'], unreviewedPaths: ['src/b.js'], note: 'Tool exploration limit reached.' },
+  };
+  const dsGateway = gateway();
+  const dsFetch = scriptedFetch([
+    ...[1, 2, 3].map((i) => deepseekReply({
+      reasoning: `read ${i}`,
+      // A tool-calling response is not a final answer, even if it happens to contain schema-valid JSON.
+      content: JSON.stringify(VALID),
+      toolCalls: [{ id: `call_${i}`, type: 'function', function: { name: 'Read', arguments: '{"file_path":"src/a.js"}' } }],
+    })),
+    deepseekReply({ content: JSON.stringify(partial) }),
+  ]);
+  const ds = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: dsGateway, env, fetchImpl: dsFetch, maxTurns: 4 });
+  assert.equal(ds.ok, true, ds.error);
+  assert.deepEqual(ds.structured, partial);
+  assert.equal(ds.meta.num_turns, 4);
+  assert.equal(dsGateway.calls.length, 3);
+  assert.equal(dsFetch.calls.length, 4);
+  const dsFinal = dsFetch.calls.at(-1).body;
+  assert.equal(dsFinal.tool_choice, 'none');
+  assert.deepEqual(dsFinal.response_format, { type: 'json_object' });
+  assert.deepEqual(dsFinal.messages.filter((m) => m.role === 'assistant').map((m) => m.reasoning_content), ['read 1', 'read 2', 'read 3']);
+  assert.deepEqual(dsFinal.messages.filter((m) => m.role === 'tool').map((m) => m.tool_call_id), ['call_1', 'call_2', 'call_3']);
+  assert.match(dsFinal.messages.at(-1).content, /coverage.unreviewedPaths/);
+
+  const gmGateway = gateway();
+  const gmFetch = scriptedFetch([
+    ...[1, 2, 3].map((i) => geminiReply({ parts: [
+      { text: JSON.stringify(VALID) },
+      { functionCall: { name: 'Read', args: { file_path: 'src/a.js' }, id: `call_${i}` }, thoughtSignature: `sig-${i}` },
+    ] })),
+    geminiReply({ parts: [{ text: JSON.stringify(partial) }] }),
+  ]);
+  const gm = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gmGateway, env: geminiEnv, fetchImpl: gmFetch, maxTurns: 4 });
+  assert.equal(gm.ok, true, gm.error);
+  assert.deepEqual(gm.structured, partial);
+  assert.equal(gm.meta.num_turns, 4);
+  assert.equal(gm.meta.used_response_json_schema, true);
+  assert.equal(gmGateway.calls.length, 3);
+  assert.equal(gmFetch.calls.length, 4);
+  const gmFinal = gmFetch.calls.at(-1).body;
+  assert.equal(gmFinal.tools, undefined);
+  assert.ok(gmFinal.generationConfig.responseJsonSchema);
+  assert.deepEqual(gmFinal.contents.filter((c) => c.role === 'model').map((c) => c.parts.find((p) => p.functionCall).thoughtSignature), ['sig-1', 'sig-2', 'sig-3']);
+  assert.deepEqual(gmFinal.contents.flatMap((c) => c.parts.filter((p) => p.functionResponse).map((p) => p.functionResponse.id)), ['call_1', 'call_2', 'call_3']);
+  assert.match(gmFinal.contents.at(-1).parts.at(-1).text, /coverage.unreviewedPaths/);
+});
+
+test('a one-turn budget is final-output-only for both providers', async () => {
+  const dsFetch = scriptedFetch([deepseekReply({ content: JSON.stringify(VALID) })]);
+  const ds = await runDeepSeek({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env, fetchImpl: dsFetch, maxTurns: 1 });
+  assert.equal(ds.ok, true, ds.error);
+  assert.equal(ds.meta.num_turns, 1);
+  assert.equal(dsFetch.calls[0].body.tool_choice, 'none');
+  const gmFetch = scriptedFetch([geminiReply({ parts: [{ text: JSON.stringify(VALID) }] })]);
+  const gm = await runGemini({ prompt: 'p', schema: RESULT_SCHEMA, toolGateway: gateway(), env: geminiEnv, fetchImpl: gmFetch, maxTurns: 1 });
+  assert.equal(gm.ok, true, gm.error);
+  assert.equal(gm.meta.num_turns, 1);
+  assert.equal(gmFetch.calls[0].body.tools, undefined);
+  assert.ok(gmFetch.calls[0].body.generationConfig.responseJsonSchema);
 });
 
 // ---------------------------------------------------------------- shared validation

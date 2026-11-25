@@ -43,11 +43,12 @@ test('live DeepSeek: tool calling + thinking + structured output against the rea
     name: 'DeepSeek',
     credential: 'DEEPSEEK_API_KEY',
     keys: ['DEEPSEEK_API_KEY', 'DEEPSEEK_BASE_URL', 'DEEPSEEK_MODEL', 'DEEPSEEK_REASONING_EFFORT'],
-    run: ({ prompt, gw: gateway, env }) => runDeepSeek({ prompt, schema: RESULT_SCHEMA, toolGateway: gateway, env, maxTurns: 4, timeoutMs: 120_000 }),
+    run: ({ prompt, gw: gateway, env }) => runDeepSeek({ prompt, schema: RESULT_SCHEMA, toolGateway: gateway, env, maxTurns: 2, timeoutMs: 120_000 }),
   });
   if (skip) return t.skip(skip);
   assert.equal(outcome.ok, true, outcome.error);
   assert.equal(outcome.meta.provider, 'deepseek');
+  assert.equal(outcome.meta.num_turns, 2, 'one tool turn and the reserved final turn');
   assert.ok(outcome.meta.input_tokens > 0 && outcome.meta.output_tokens > 0, 'the API reported token usage');
   assert.ok(outcome.meta.duration_ms > 0);
   assert.equal(validateResult(outcome.structured, RESULT_SCHEMA).ok, true);
@@ -61,15 +62,14 @@ test('live Gemini: tool calling + structured output against the real API', async
     name: 'Gemini',
     credential: 'GEMINI_API_KEY',
     keys: ['GEMINI_API_KEY', 'GEMINI_API_BASE_URL', 'GEMINI_MODEL', 'GEMINI_THINKING_LEVEL'],
-    // Force a plain-prose reply first so runGemini must exercise the final responseJsonSchema request.
-    prompt: `Read src/answer.txt with the Read tool. After reading it, reply in one short plain-text sentence (do NOT output JSON) stating the exact token it contains.`,
-    run: ({ prompt, gw: gateway, env }) => runGemini({ prompt, schema: RESULT_SCHEMA, toolGateway: gateway, env, maxTurns: 5, timeoutMs: 120_000 }),
+    // One exploration turn forces the final responseJsonSchema request immediately after a tool response.
+    run: ({ prompt, gw: gateway, env }) => runGemini({ prompt, schema: RESULT_SCHEMA, toolGateway: gateway, env, maxTurns: 2, timeoutMs: 120_000 }),
   });
   if (skip) return t.skip(skip);
   assert.equal(outcome.ok, true, outcome.error);
   assert.equal(outcome.meta.provider, 'gemini');
   assert.equal(outcome.meta.used_response_json_schema, true, 'must execute the final responseJsonSchema request');
-  assert.ok(outcome.meta.num_turns >= 3, `expected tool turn + prose turn + final responseJsonSchema turn, got ${outcome.meta.num_turns}`);
+  assert.equal(outcome.meta.num_turns, 2, 'one tool turn and the reserved final turn');
   assert.ok(outcome.meta.input_tokens > 0 && outcome.meta.output_tokens > 0, 'the API reported token usage');
   assert.equal(validateResult(outcome.structured, RESULT_SCHEMA).ok, true);
   assert.ok(gw.history.some((entry) => entry.toolName === 'Read' && entry.status === 'success'),

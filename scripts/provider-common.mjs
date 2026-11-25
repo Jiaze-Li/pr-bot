@@ -4,6 +4,9 @@
 // This is deliberately NOT a plugin/registry layer. There are three fixed providers and one fallback slot; the
 // provider module resolves them by name. Adding a fourth would be a code change, not a registration.
 
+// Close exploration before the last allowed request. Return honest partial coverage, not a guessed verdict.
+export const FINAL_REVIEW_INSTRUCTION = 'Return the final review now as one JSON object matching the review schema exactly. No more tools are available. Report only files actually reviewed; list every remaining assigned file in coverage.unreviewedPaths and set coverage.complete=false if any remain. Preserve supported findings and prior-finding verdicts; do not invent coverage or evidence. JSON only.';
+
 export const RESULT_ERROR_KINDS = Object.freeze(['none', 'config', 'unavailable', 'timeout', 'turns', 'budget', 'malformed', 'execution']);
 
 export const num = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null);

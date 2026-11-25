@@ -5,7 +5,7 @@
 // descriptions and JSON Schemas of `Read`/`Glob`/`Grep`. No GitHub credential is passed to this module, and no
 // request is retried inside it: one call here is one attempt in the PR's budget, charged by the caller.
 import {
-  baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
+  FINAL_REVIEW_INSTRUCTION, baseMeta, checkBudgetCap, estimateCostUsd, failure, normalizeBaseUrl, num, priceFromEnv, readToolDeclarations, statusClass, validateResult,
 } from './provider-common.mjs';
 
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-flash';
@@ -141,12 +141,12 @@ export async function runDeepSeek({
   let toolCalls = 0;
   let resolvedModel = model;
   let lastContent = '';
-  let finished = false;
 
   try {
     // Stage A: tool exploration. With `tools` present, `reasoning_content` must be echoed back in every later
     // request or the API rejects the conversation with 400.
-    for (; turns < Math.max(1, maxTurns);) {
+    // Reserve the last permitted request for a tool-disabled final answer, even if the model keeps asking to read.
+    for (; turns < Math.max(1, maxTurns) - 1;) {
       turns += 1;
       const payload = await call({
         model, messages, tools, thinking, reasoning_effort: effort === 'none' ? undefined : effort,
@@ -168,13 +168,12 @@ export async function runDeepSeek({
         ...(typeof message.reasoning_content === 'string' ? { reasoning_content: message.reasoning_content } : {}),
         ...(calls.length ? { tool_calls: calls } : {}),
       });
-      lastContent = typeof message.content === 'string' ? message.content : '';
       if (!calls.length) {
+        lastContent = typeof message.content === 'string' ? message.content : '';
         if (['length', 'content_filter', 'insufficient_system_resource', 'aborted'].includes(choice.finish_reason)) {
           return failure(choice.finish_reason === 'length' ? 'malformed' : 'execution',
             `DeepSeek stopped with finish_reason=${choice.finish_reason}`, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
         }
-        finished = true;
         break;
       }
       if (toolCalls + calls.length > maxTurns * 4) {
@@ -202,12 +201,9 @@ export async function runDeepSeek({
         });
       }
     }
-    if (!finished) {
-      return failure('turns', `DeepSeek used the whole ${maxTurns}-turn budget without a final answer`, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
-    }
-
-    // Stage B: structured result. The final request asks for JSON only and carries no tools, so `reasoning_content`
-    // is not echoed (the API ignores it there) and `json_object` guarantees parseable JSON.
+    // Stage B: accept a valid answer only from a completed, tool-free model turn. Otherwise use the reserved
+    // request to synthesize an answer. Keep declarations with tool_choice:none so DeepSeek retains prior reasoning
+    // and tool results; no tool can be executed in this final stage.
     const attemptFromText = () => {
       if (!lastContent.trim()) return null;
       try {
@@ -225,16 +221,10 @@ export async function runDeepSeek({
     }
 
     turns += 1;
-    const history = messages
-      .filter((m) => m.role !== 'system')
-      .map(({ reasoning_content, ...rest }) => rest); // eslint-disable-line no-unused-vars
     const payload = await call({
       model,
-      messages: [
-        { role: 'system', content: `${DEEPSEEK_SYSTEM_PROMPT}\n\n${schemaInstruction(schema)}` },
-        ...history,
-        { role: 'user', content: 'Now return the final review as the JSON object defined by the schema. JSON only.' },
-      ],
+      messages: [...messages, { role: 'user', content: FINAL_REVIEW_INSTRUCTION }],
+      ...(tools.length ? { tools, tool_choice: 'none' } : {}),
       thinking,
       reasoning_effort: effort === 'none' ? undefined : effort,
       response_format: { type: 'json_object' },
@@ -249,6 +239,9 @@ export async function runDeepSeek({
     const choice = payload?.choices?.[0];
     if (choice?.finish_reason === 'length') {
       return failure('malformed', 'DeepSeek truncated the structured result (finish_reason=length)', finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
+    }
+    if (choice?.finish_reason !== 'stop' || choice?.message?.tool_calls?.length) {
+      return failure('execution', `DeepSeek did not finish the tool-disabled final review (finish_reason=${choice?.finish_reason ?? 'missing'})`, finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
     }
     const text = typeof choice?.message?.content === 'string' ? choice.message.content : '';
     if (!text.trim()) {
