@@ -68,6 +68,7 @@ test('live Gemini: tool calling + structured output against the real API', async
   if (skip) return t.skip(skip);
   assert.equal(outcome.ok, true, outcome.error);
   assert.equal(outcome.meta.provider, 'gemini');
+  assert.equal(outcome.meta.used_response_json_schema, true, 'must execute the final responseJsonSchema request');
   assert.ok(outcome.meta.num_turns >= 3, `expected tool turn + prose turn + final responseJsonSchema turn, got ${outcome.meta.num_turns}`);
   assert.ok(outcome.meta.input_tokens > 0 && outcome.meta.output_tokens > 0, 'the API reported token usage');
   assert.equal(validateResult(outcome.structured, RESULT_SCHEMA).ok, true);

@@ -15,7 +15,7 @@ const RESERVE_BYTES = 100_000;
 // Gemini accepts only a subset of JSON Schema. Drop everything else (length bounds stay enforced by our validator).
 const GEMINI_SCHEMA_KEYS = new Set([
   '$id', '$defs', '$ref', '$anchor', 'type', 'format', 'title', 'description', 'enum', 'items', 'prefixItems',
-  'minItems', 'maxItems', 'minimum', 'maximum', 'anyOf', 'oneOf', 'properties', 'additionalProperties', 'required',
+  'minimum', 'maximum', 'anyOf', 'oneOf', 'properties', 'additionalProperties', 'required',
   'propertyOrdering',
 ]);
 
@@ -242,7 +242,7 @@ export async function runGemini({
       return failure('malformed', `Gemini structured result did not match the review schema: ${validation.error}`,
         finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }));
     }
-    return { ok: true, structured: parsed, errorKind: 'none', error: null, meta: finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel }) };
+    return { ok: true, structured: parsed, errorKind: 'none', error: null, meta: finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, used_response_json_schema: true }) };
   } catch (error) {
     return failure(error?.kind ?? 'execution', error?.message ?? String(error),
       finalizeMeta({ num_turns: turns, tool_calls: toolCalls, resolved_model: resolvedModel, ...(error?.status ? { http_status: error.status } : {}) }));
