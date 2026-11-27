@@ -24,7 +24,7 @@ const API = 'https://api.github.com';
 
 // Total worst case per PR, all rounds, rerun and HEAD changes included: MAX_ATTEMPTS x (turns, nominal USD, minutes).
 export const DEFAULT_LIMITS = Object.freeze({ maxTurns: 14, maxBudgetUsd: 0.5, timeoutMs: 8 * 60 * 1000 });
-export const RUN_LIMITS = Object.freeze({ maxAttempts: 6, maxWallMs: 30 * 60 * 1000, maxConsecutiveFailures: 2 });
+export const RUN_LIMITS = Object.freeze({ maxAttempts: 8, maxWallMs: 30 * 60 * 1000, maxConsecutiveFailures: 2 });
 export const DIAGNOSTICS_PREFIX = 'REVIEW_DIAGNOSTICS';
 
 export function resolveLimits(env = {}) {

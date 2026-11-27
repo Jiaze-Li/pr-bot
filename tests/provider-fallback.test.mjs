@@ -169,20 +169,49 @@ test('the fallback fits inside the budget when it is the last allowed execution,
   assert.equal(stateOf(gh).attempts_used, MAX_ATTEMPTS);
 });
 
-test('the per-run attempt limit also covers fallback executions', async () => {
-  // 31 files are four batches; each batch costs two executions (failed primary + fallback). After three credited
-  // batches the run has used six executions, so the fourth batch is not started even though progress was made.
+test('eight executions can complete a round with four successful fallbacks', async () => {
   const { result, primaryCalls, fallbackCalls, gh } = await run({
     changed: files(31),
     primary: () => model.fail('primary down'),
     fallback: (call) => model.ok({ assigned: call.assigned }),
   });
-  assert.equal(primaryCalls.length + fallbackCalls.length, 6, 'six executions per run, primary and fallback together');
-  assert.equal(primaryCalls.length, 3);
-  assert.equal(fallbackCalls.length, 3);
+  assert.equal(primaryCalls.length, 4);
+  assert.equal(fallbackCalls.length, 4);
+  assert.equal(result.status, 'READY');
+  assert.equal(stateOf(gh).attempts_used, 8);
+  assert.equal(stateOf(gh).completed_rounds, 1);
+});
+
+test('the per-run attempt limit also covers fallback executions and preserves progress for a rerun', async () => {
+  // 41 files are five batches; each batch costs two executions (failed primary + fallback). After four credited
+  // batches the run has used eight executions, so the fifth batch is not started even though progress was made.
+  const changed = files(41);
+  const { result, primaryCalls, fallbackCalls, gh } = await run({
+    changed,
+    primary: () => model.fail('primary down'),
+    fallback: (call) => model.ok({ assigned: call.assigned }),
+  });
+  assert.equal(primaryCalls.length + fallbackCalls.length, 8, 'eight executions per run, primary and fallback together');
+  assert.equal(primaryCalls.length, 4);
+  assert.equal(fallbackCalls.length, 4);
   assert.equal(result.status, 'STOPPED');
-  assert.match(stateOf(gh).reason, /This run used its 6 attempts/);
-  assert.equal(stateOf(gh).attempts_used, 6);
+  const state = stateOf(gh);
+  assert.match(state.reason, /This run used its 8 attempts/);
+  assert.equal(state.attempts_used, 8);
+  assert.equal(state.completed_rounds, 0);
+  assert.equal(state.reviewed_files.length, 40);
+  assert.equal(state.stalled_attempts, 0);
+
+  const resumed = await run({
+    changed,
+    seed: state,
+    primary: (call) => model.ok({ assigned: call.assigned }),
+  });
+  assert.equal(resumed.result.status, 'READY');
+  assert.equal(resumed.primaryCalls.length, 1);
+  assert.deepEqual(resumed.primaryCalls[0].assigned, changed.filter((file) => !state.reviewed_files.includes(file)));
+  assert.equal(stateOf(resumed.gh).attempts_used, 9);
+  assert.equal(stateOf(resumed.gh).completed_rounds, 1);
 });
 
 test('without a configured fallback a failure just spends the attempt, exactly as before', async () => {
