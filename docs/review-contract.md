@@ -24,7 +24,7 @@ One conversation comment per PR, authored by the review App (`jiaze-claude-revie
 }
 ```
 
-A blocking finding is `severity in P0..P2` and `verification != FIXED`. P3 never blocks. `skipped_files` counts files outside the review scope (ignore rules, binary content); the comment says so.
+A blocking finding is `severity in P0..P2` and `verification != FIXED`. P3 never blocks. The Markdown table displays a P3 whose `checked_head_sha` differs from `head_sha` (including null) as `NOT_RECHECKED`: a historical suggestion, neither confirmed open nor confirmed fixed on this HEAD. This is display-only, not a JSON verification value; consumers must continue to read the authoritative JSON. No additional model calls or review rounds are required. `skipped_files` counts files outside the review scope (ignore rules, binary content); the comment says so.
 
 ## Consumer rules (`evaluateComment`)
 

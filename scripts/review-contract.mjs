@@ -98,10 +98,12 @@ export function renderComment(state) {
   ];
   const pending = state.scope.total_files - state.reviewed_files.length;
   const progress = state.status !== 'IN_PROGRESS' && !state.reviewed_files.length ? [] : state.completed_head_sha === state.head_sha ? [] : [`Coverage in progress: ${state.reviewed_files.length}/${state.scope.total_files} file(s) reviewed${pending > 0 ? `, ${pending} remaining` : ''}.`];
+  const isStaleP3 = (f) => f.severity === 'P3' && f.checked_head_sha !== state.head_sha;
   const table = state.findings.length
     ? ['', '| ID | Severity | State | Path | Failure path |', '| --- | --- | --- | --- | --- |',
-      ...state.findings.map((f) => `| ${f.id} | ${f.severity} | ${f.verification} | \`${safeText(f.path, 120).replace(/`/g, "'")}\` | ${safeText(f.failure_path || f.title, 200)} |`),
-      '', 'P3 items are suggestions and never block. This comment is generated from the JSON above.']
+      ...state.findings.map((f) => `| ${f.id} | ${f.severity} | ${isStaleP3(f) ? 'NOT_RECHECKED' : f.verification} | \`${safeText(f.path, 120).replace(/`/g, "'")}\` | ${safeText(f.failure_path || f.title, 200)} |`),
+      '', 'P3 items are suggestions and never block. This comment is generated from the JSON above.',
+      ...(state.findings.some(isStaleP3) ? ['NOT_RECHECKED: a historical P3 was not verified on this HEAD; it is neither confirmed open nor confirmed fixed.'] : [])]
     : [];
   let text = `${head([...(progress.length ? ['', ...progress] : []), ...table]).join('\n')}\n`;
   if (text.length > MAX_COMMENT_CHARS) text = `${head(progress.length ? ['', ...progress] : []).join('\n')}\n`; // JSON stays complete; the table is only a view

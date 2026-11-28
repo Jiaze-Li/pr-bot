@@ -26,6 +26,51 @@ test('render/parse round-trips and the JSON block alone carries the state', () =
   assert.equal(readState([rec(body)], { repo: REPO, prNumber: 5 }).kind, 'ok');
 });
 
+test('historical P3 is displayed as NOT_RECHECKED on the next HEAD without altering the authoritative result', () => {
+  const suggestion = { severity: 'P3', title: 'Missing roadmap PR number', path: 'a.js', failure_path: 'The roadmap omits the PR number.' };
+  const output = (findings) => parseBatchOutput({ summary: 's', findings, prior_findings: [], coverage: { complete: true, reviewedPaths: ['a.js', 'b.js'], unreviewedPaths: [], note: '' } }).value;
+  const finish = (state, findings) => concludeRound(applyBatch({ state, assigned: ['a.js', 'b.js'], output: output(findings), needsRead: new Map(), reads: new Map(), now: 1 }).state, 1);
+  const first = finish(base(), [suggestion]);
+  assert.match(renderComment(first), /\| F001 \| P3 \| OPEN \|/);
+  assert.doesNotMatch(renderComment(first), /NOT_RECHECKED/);
+  const next = claimAttempt({ prev: first, repo: REPO, prNumber: 5, head: sha('b'), scope, now: 2 });
+  const done = finish(next, []);
+  assert.equal(done.status, 'READY');
+  assert.equal(done.completed_rounds, 2);
+  assert.equal(done.findings[0].verification, 'OPEN');
+  assert.equal(done.findings[0].checked_head_sha, sha('a'));
+  const body = renderComment(done);
+  assert.match(body, /\| F001 \| P3 \| NOT_RECHECKED \|/);
+  assert.match(body, /neither confirmed open nor confirmed fixed/);
+  assert.deepEqual(parseComment(body).value, done);
+  assert.ok(validateState(done).ok);
+  assert.equal(evaluateComment({ repo: REPO, prNumber: 5, localHead: sha('b'), currentHead: sha('b'), authorLogin: BOT_LOGIN, authorType: 'Bot', body }).decision, 'READY');
+});
+
+test('NOT_RECHECKED is a table-only projection for P3 with missing or stale HEAD evidence', () => {
+  const state = base();
+  const finding = { title: 't', path: 'a.js', failure_path: 'x', severity: 'P3' };
+  const rows = [
+    ['P3', 'OPEN', null, 'NOT_RECHECKED'],
+    ['P3', 'FIXED', sha('b'), 'NOT_RECHECKED'],
+    ['P3', 'STILL_OPEN', sha('b'), 'NOT_RECHECKED'],
+    ['P3', 'UNCERTAIN', sha('b'), 'NOT_RECHECKED'],
+    ['P3', 'OPEN', sha('a'), 'OPEN'],
+    ['P3', 'FIXED', sha('a'), 'FIXED'],
+    ['P3', 'STILL_OPEN', sha('a'), 'STILL_OPEN'],
+    ['P3', 'UNCERTAIN', sha('a'), 'UNCERTAIN'],
+    ['P2', 'OPEN', sha('b'), 'OPEN'],
+    ['P1', 'UNCERTAIN', sha('b'), 'UNCERTAIN'],
+    ['P0', 'STILL_OPEN', sha('b'), 'STILL_OPEN'],
+  ];
+  state.findings = rows.map(([severity, verification, checked_head_sha], i) => ({ ...finding, id: `F${String(i + 1).padStart(3, '0')}`, severity, verification, checked_head_sha }));
+  const body = renderComment(state);
+  rows.forEach(([severity, , , display], i) => {
+    assert.ok(body.includes(`| ${state.findings[i].id} | ${severity} | ${display} |`));
+  });
+  assert.deepEqual(parseComment(body).value, state);
+});
+
 test('only the bot author counts; two state comments conflict; v1 and corrupt documents are never trusted', () => {
   const body = renderComment({ ...base() });
   const opts = { repo: REPO, prNumber: 5 };
